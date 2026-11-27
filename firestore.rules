@@ -1,0 +1,527 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Deny all access by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Global Hardened Primitives
+    // -------------------------------------------------------------------------
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedEmail() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedOwner() {
+      return isVerifiedEmail() && request.auth.token.email == 'rikudatabackup@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedOwner()
+        || (isVerifiedEmail() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    function isValidString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isOptionalString(data, field, maxLen) {
+      return !(field in data) || (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    function isValidPhone(val) {
+      return val is string && val.size() >= 10 && val.size() <= 15 && val.matches('^[0-9+\\-\\s]{10,15}$');
+    }
+
+    function isNonNegNumber(val, maxVal) {
+      return (val is int || val is float) && val >= 0 && val <= maxVal;
+    }
+
+    // -------------------------------------------------------------------------
+    // Entity Validation Blueprints (Anti-Update-Gap)
+    // -------------------------------------------------------------------------
+    function isValidAdmin(data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'createdAt'])
+        && isValidId(data.uid)
+        && isValidString(data.email, 3, 200)
+        && isValidString(data.displayName, 1, 120)
+        && (data.role in ['owner', 'admin'])
+        && data.createdAt is timestamp;
+    }
+
+    function isValidApplication(data) {
+      return data.keys().hasAll([
+          'applicationNumber', 'trackingKey', 'studentName', 'studentMobile', 'studentWhatsapp',
+          'fatherName', 'fatherMobile', 'motherName', 'motherMobile', 'dob', 'gender',
+          'address', 'village', 'postOffice', 'district', 'state', 'pinCode',
+          'studentClass', 'stream', 'course', 'batch',
+          'feeAmount', 'paidAmount', 'paymentStatus', 'status',
+          'declarationAccepted', 'submittedAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'applicationNumber', 'trackingKey', 'studentName', 'studentMobile', 'studentWhatsapp',
+          'fatherName', 'fatherMobile', 'motherName', 'motherMobile', 'dob', 'gender',
+          'address', 'village', 'postOffice', 'district', 'state', 'pinCode',
+          'studentClass', 'stream', 'course', 'batch',
+          'photoUrl', 'photoMediaId', 'idProofUrl', 'idProofMediaId', 'marksheetUrl', 'marksheetMediaId',
+          'feeAmount', 'paidAmount', 'paymentStatus', 'status',
+          'declarationAccepted', 'studentId', 'remarks', 'submittedAt', 'updatedAt'
+        ])
+        && isValidString(data.applicationNumber, 4, 40) && data.applicationNumber.matches('^[a-zA-Z0-9_\\-]+$')
+        && isValidString(data.trackingKey, 10, 64) && data.trackingKey.matches('^[a-zA-Z0-9_\\-]+$')
+        && isValidString(data.studentName, 2, 120)
+        && isValidPhone(data.studentMobile)
+        && isValidPhone(data.studentWhatsapp)
+        && isValidString(data.fatherName, 2, 120)
+        && isValidPhone(data.fatherMobile)
+        && isValidString(data.motherName, 2, 120)
+        && isValidPhone(data.motherMobile)
+        && isValidString(data.dob, 4, 20)
+        && (data.gender in ['Male', 'Female', 'Other'])
+        && isValidString(data.address, 3, 400)
+        && isValidString(data.village, 1, 120)
+        && isValidString(data.postOffice, 1, 120)
+        && isValidString(data.district, 1, 120)
+        && isValidString(data.state, 1, 120)
+        && data.pinCode is string && data.pinCode.size() == 6 && data.pinCode.matches('^[0-9]{6}$')
+        && (data.studentClass in ['Class 10', 'Class 11', 'Class 12', 'Other'])
+        && (data.stream in ['Science', 'PCM', 'PCB', 'Other'])
+        && isValidString(data.course, 2, 100)
+        && isValidString(data.batch, 2, 80)
+        && isOptionalString(data, 'photoUrl', 2000)
+        && isOptionalString(data, 'photoMediaId', 128)
+        && isOptionalString(data, 'idProofUrl', 2000)
+        && isOptionalString(data, 'idProofMediaId', 128)
+        && isOptionalString(data, 'marksheetUrl', 2000)
+        && isOptionalString(data, 'marksheetMediaId', 128)
+        && isNonNegNumber(data.feeAmount, 500000)
+        && isNonNegNumber(data.paidAmount, 500000)
+        && (data.paymentStatus in ['PENDING', 'PARTIAL', 'PAID'])
+        && (data.status in ['pending', 'approved', 'rejected'])
+        && data.declarationAccepted is bool
+        && isOptionalString(data, 'studentId', 64)
+        && isOptionalString(data, 'remarks', 500)
+        && data.submittedAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidApplicationStatus(data) {
+      return data.keys().hasAll([
+          'applicationNumber', 'studentName', 'course', 'batch', 'studentClass',
+          'status', 'paymentStatus', 'feeAmount', 'paidAmount', 'submittedAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'applicationNumber', 'studentName', 'course', 'batch', 'studentClass',
+          'status', 'paymentStatus', 'feeAmount', 'paidAmount', 'studentId', 'remarks', 'submittedAt', 'updatedAt'
+        ])
+        && isValidString(data.applicationNumber, 4, 40) && data.applicationNumber.matches('^[a-zA-Z0-9_\\-]+$')
+        && isValidString(data.studentName, 2, 120)
+        && isValidString(data.course, 2, 100)
+        && isValidString(data.batch, 2, 80)
+        && isValidString(data.studentClass, 2, 40)
+        && (data.status in ['pending', 'approved', 'rejected'])
+        && (data.paymentStatus in ['PENDING', 'PARTIAL', 'PAID'])
+        && isNonNegNumber(data.feeAmount, 500000)
+        && isNonNegNumber(data.paidAmount, 500000)
+        && isOptionalString(data, 'studentId', 64)
+        && isOptionalString(data, 'remarks', 500)
+        && data.submittedAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStudent(data) {
+      return data.keys().hasAll([
+          'studentId', 'applicationId', 'applicationNumber', 'securityCode', 'qrToken',
+          'studentName', 'studentMobile', 'fatherName', 'studentClass', 'course', 'batch',
+          'feeAmount', 'paidAmount', 'paymentStatus', 'status', 'academicSession', 'approvedAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'studentId', 'applicationId', 'applicationNumber', 'securityCode', 'qrToken',
+          'studentName', 'studentMobile', 'studentWhatsapp', 'fatherName', 'fatherMobile',
+          'motherName', 'motherMobile', 'dob', 'gender', 'address', 'village', 'postOffice',
+          'district', 'state', 'pinCode', 'studentClass', 'stream', 'course', 'batch',
+          'photoUrl', 'photoMediaId', 'idProofUrl', 'idProofMediaId', 'marksheetUrl', 'marksheetMediaId',
+          'feeAmount', 'paidAmount', 'paymentStatus', 'status', 'academicSession',
+          'approvedAt', 'approvedBy', 'updatedAt'
+        ])
+        && isValidString(data.studentId, 4, 64) && data.studentId.matches('^[a-zA-Z0-9_\\-]+$')
+        && isValidString(data.applicationId, 1, 128)
+        && isValidString(data.applicationNumber, 4, 40)
+        && data.securityCode is string && data.securityCode.size() == 4 && data.securityCode.matches('^[0-9]{4}$')
+        && isValidString(data.qrToken, 4, 120)
+        && isValidString(data.studentName, 2, 120)
+        && isValidPhone(data.studentMobile)
+        && isOptionalString(data, 'studentWhatsapp', 15)
+        && isValidString(data.fatherName, 2, 120)
+        && isOptionalString(data, 'fatherMobile', 15)
+        && isOptionalString(data, 'motherName', 120)
+        && isOptionalString(data, 'motherMobile', 15)
+        && isOptionalString(data, 'dob', 20)
+        && (!('gender' in data) || (data.gender in ['Male', 'Female', 'Other']))
+        && isOptionalString(data, 'address', 400)
+        && isOptionalString(data, 'village', 120)
+        && isOptionalString(data, 'postOffice', 120)
+        && isOptionalString(data, 'district', 120)
+        && isOptionalString(data, 'state', 120)
+        && isOptionalString(data, 'pinCode', 6)
+        && isValidString(data.studentClass, 2, 40)
+        && isOptionalString(data, 'stream', 40)
+        && isValidString(data.course, 2, 100)
+        && isValidString(data.batch, 2, 80)
+        && isOptionalString(data, 'photoUrl', 2000)
+        && isOptionalString(data, 'photoMediaId', 128)
+        && isOptionalString(data, 'idProofUrl', 2000)
+        && isOptionalString(data, 'idProofMediaId', 128)
+        && isOptionalString(data, 'marksheetUrl', 2000)
+        && isOptionalString(data, 'marksheetMediaId', 128)
+        && isNonNegNumber(data.feeAmount, 500000)
+        && isNonNegNumber(data.paidAmount, 500000)
+        && (data.paymentStatus in ['PENDING', 'PARTIAL', 'PAID'])
+        && (data.status in ['active', 'suspended'])
+        && isValidString(data.academicSession, 4, 40)
+        && isOptionalString(data, 'approvedBy', 200)
+        && data.approvedAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSecurityCode(data) {
+      return data.keys().hasAll(['code', 'studentId', 'active', 'assignedAt'])
+        && data.keys().hasOnly(['code', 'studentId', 'active', 'assignedAt'])
+        && data.code is string && data.code.size() == 4 && data.code.matches('^[0-9]{4}$')
+        && isValidString(data.studentId, 4, 64)
+        && data.active is bool
+        && data.assignedAt is timestamp;
+    }
+
+    function isValidBatch(data) {
+      return data.keys().hasAll(['name', 'timing', 'active', 'order', 'updatedAt'])
+        && data.keys().hasOnly(['name', 'timing', 'capacity', 'feeOverride', 'active', 'order', 'updatedAt'])
+        && isValidString(data.name, 2, 80)
+        && isValidString(data.timing, 2, 80)
+        && (!('capacity' in data) || isNonNegNumber(data.capacity, 5000))
+        && (!('feeOverride' in data) || data.feeOverride == null || isNonNegNumber(data.feeOverride, 500000))
+        && data.active is bool
+        && isNonNegNumber(data.order, 1000)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCourse(data) {
+      return data.keys().hasAll(['title', 'feeAmount', 'active', 'order', 'updatedAt'])
+        && data.keys().hasOnly(['title', 'category', 'targetClass', 'description', 'duration', 'feeAmount', 'active', 'order', 'updatedAt'])
+        && isValidString(data.title, 2, 100)
+        && isOptionalString(data, 'category', 60)
+        && isOptionalString(data, 'targetClass', 60)
+        && isOptionalString(data, 'description', 600)
+        && isOptionalString(data, 'duration', 60)
+        && isNonNegNumber(data.feeAmount, 500000)
+        && data.active is bool
+        && isNonNegNumber(data.order, 1000)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidFeeRule(data) {
+      return data.keys().hasAll(['label', 'amount', 'active', 'updatedAt'])
+        && data.keys().hasOnly(['label', 'studentClass', 'course', 'batch', 'amount', 'active', 'updatedAt'])
+        && isValidString(data.label, 2, 120)
+        && isOptionalString(data, 'studentClass', 40)
+        && isOptionalString(data, 'course', 100)
+        && isOptionalString(data, 'batch', 80)
+        && isNonNegNumber(data.amount, 500000)
+        && data.active is bool
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPayment(data) {
+      return data.keys().hasAll(['receiptNumber', 'studentName', 'amount', 'method', 'recordedBy', 'paidAt'])
+        && data.keys().hasOnly(['receiptNumber', 'studentId', 'applicationId', 'studentName', 'course', 'batch', 'amount', 'method', 'referenceNo', 'notes', 'recordedBy', 'paidAt'])
+        && isValidString(data.receiptNumber, 4, 48)
+        && isOptionalString(data, 'studentId', 64)
+        && isOptionalString(data, 'applicationId', 128)
+        && isValidString(data.studentName, 2, 120)
+        && isOptionalString(data, 'course', 100)
+        && isOptionalString(data, 'batch', 80)
+        && isNonNegNumber(data.amount, 500000) && data.amount > 0
+        && (data.method in ['Cash', 'UPI', 'Bank Transfer', 'Card', 'Cheque'])
+        && isOptionalString(data, 'referenceNo', 100)
+        && isOptionalString(data, 'notes', 300)
+        && isValidString(data.recordedBy, 2, 200)
+        && data.paidAt is timestamp;
+    }
+
+    function isValidBanner(data) {
+      return data.keys().hasAll(['title', 'order', 'active', 'updatedAt'])
+        && data.keys().hasOnly(['title', 'description', 'announcement', 'imageUrl', 'mediaId', 'order', 'active', 'updatedAt'])
+        && isValidString(data.title, 2, 140)
+        && isOptionalString(data, 'description', 500)
+        && isOptionalString(data, 'announcement', 240)
+        && isOptionalString(data, 'imageUrl', 2000)
+        && isOptionalString(data, 'mediaId', 128)
+        && isNonNegNumber(data.order, 1000)
+        && data.active is bool
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidGalleryItem(data) {
+      return data.keys().hasAll(['title', 'category', 'active', 'createdAt'])
+        && data.keys().hasOnly(['title', 'category', 'imageUrl', 'mediaId', 'active', 'createdAt'])
+        && isValidString(data.title, 2, 140)
+        && isValidString(data.category, 2, 60)
+        && isOptionalString(data, 'imageUrl', 2000)
+        && isOptionalString(data, 'mediaId', 128)
+        && data.active is bool
+        && data.createdAt is timestamp;
+    }
+
+    function isValidNotice(data) {
+      return data.keys().hasAll(['title', 'content', 'category', 'pinned', 'active', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['title', 'content', 'category', 'pinned', 'active', 'createdAt', 'updatedAt'])
+        && isValidString(data.title, 2, 160)
+        && isValidString(data.content, 4, 1500)
+        && (data.category in ['Admission', 'Exam', 'Schedule', 'General'])
+        && data.pinned is bool
+        && data.active is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidScanHistory(data) {
+      return data.keys().hasAll(['scannedCode', 'statusResult', 'scannedBy', 'scannedAt'])
+        && data.keys().hasOnly(['scannedCode', 'studentId', 'studentName', 'statusResult', 'reason', 'scannedBy', 'scannedAt'])
+        && isValidString(data.scannedCode, 1, 200)
+        && isOptionalString(data, 'studentId', 64)
+        && isOptionalString(data, 'studentName', 120)
+        && (data.statusResult in ['VALID', 'PENDING', 'INVALID'])
+        && isOptionalString(data, 'reason', 240)
+        && isValidString(data.scannedBy, 2, 200)
+        && data.scannedAt is timestamp;
+    }
+
+    function isValidSettings(data) {
+      return data.keys().hasAll(['instituteName', 'teacherName', 'defaultFee', 'admissionsOpen', 'updatedAt'])
+        && data.keys().hasOnly([
+          'instituteName', 'teacherName', 'tagline', 'academicSession', 'defaultFee',
+          'admissionsOpen', 'admissionHeadline', 'phone', 'whatsappNumber', 'email',
+          'address', 'signatureText', 'updatedAt'
+        ])
+        && isValidString(data.instituteName, 2, 120)
+        && isValidString(data.teacherName, 2, 120)
+        && isOptionalString(data, 'tagline', 200)
+        && isOptionalString(data, 'academicSession', 40)
+        && isNonNegNumber(data.defaultFee, 500000)
+        && data.admissionsOpen is bool
+        && isOptionalString(data, 'admissionHeadline', 200)
+        && isOptionalString(data, 'phone', 30)
+        && isOptionalString(data, 'whatsappNumber', 30)
+        && isOptionalString(data, 'email', 160)
+        && isOptionalString(data, 'address', 300)
+        && isOptionalString(data, 'signatureText', 80)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMediaBlob(data) {
+      return data.keys().hasAll(['dataUrl', 'mimeType', 'createdAt'])
+        && data.keys().hasOnly(['dataUrl', 'mimeType', 'fileName', 'createdAt'])
+        && isValidString(data.dataUrl, 20, 650000)
+        && isValidString(data.mimeType, 3, 60)
+        && isOptionalString(data, 'fileName', 160)
+        && data.createdAt is timestamp;
+    }
+
+    // -------------------------------------------------------------------------
+    // Collection Rules
+    // -------------------------------------------------------------------------
+
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && (isAdmin() || (isVerifiedEmail() && request.auth.uid == adminId));
+      allow list: if isAdmin();
+      allow create: if isValidId(adminId) && isValidAdmin(incoming()) && incoming().createdAt == request.time && isAdmin();
+      allow update: if isValidId(adminId) && isValidAdmin(incoming()) && incoming().createdAt == existing().createdAt && isAdmin();
+      allow delete: if isValidId(adminId) && isAdmin();
+    }
+
+    match /applications/{applicationId} {
+      allow get: if isValidId(applicationId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(applicationId)
+        && isValidApplication(incoming())
+        && incoming().applicationNumber == applicationId
+        && incoming().status == 'pending'
+        && incoming().paymentStatus == 'PENDING'
+        && incoming().paidAmount == 0
+        && incoming().declarationAccepted == true
+        && incoming().submittedAt == request.time
+        && incoming().updatedAt == request.time
+        && existsAfter(/databases/$(database)/documents/applicationStatus/$(incoming().trackingKey));
+      allow update: if isValidId(applicationId)
+        && isValidApplication(incoming())
+        && incoming().submittedAt == existing().submittedAt
+        && incoming().applicationNumber == existing().applicationNumber
+        && incoming().updatedAt == request.time
+        && isAdmin();
+      allow delete: if isValidId(applicationId) && isAdmin();
+    }
+
+    match /applicationStatus/{trackingKey} {
+      allow get: if isValidId(trackingKey);
+      allow list: if isAdmin();
+      allow create: if isValidId(trackingKey)
+        && isValidApplicationStatus(incoming())
+        && incoming().status == 'pending'
+        && incoming().paymentStatus == 'PENDING'
+        && incoming().paidAmount == 0
+        && incoming().submittedAt == request.time
+        && incoming().updatedAt == request.time
+        && existsAfter(/databases/$(database)/documents/applications/$(incoming().applicationNumber));
+      allow update: if isValidId(trackingKey)
+        && isValidApplicationStatus(incoming())
+        && incoming().submittedAt == existing().submittedAt
+        && incoming().applicationNumber == existing().applicationNumber
+        && incoming().updatedAt == request.time
+        && isAdmin();
+      allow delete: if isValidId(trackingKey) && isAdmin();
+    }
+
+    match /students/{studentId} {
+      allow get: if isValidId(studentId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(studentId)
+        && isValidStudent(incoming())
+        && incoming().studentId == studentId
+        && incoming().approvedAt == request.time
+        && incoming().updatedAt == request.time
+        && isAdmin();
+      allow update: if isValidId(studentId)
+        && isValidStudent(incoming())
+        && incoming().studentId == existing().studentId
+        && incoming().applicationId == existing().applicationId
+        && incoming().applicationNumber == existing().applicationNumber
+        && incoming().approvedAt == existing().approvedAt
+        && incoming().updatedAt == request.time
+        && isAdmin();
+      allow delete: if isValidId(studentId) && isAdmin();
+    }
+
+    match /securityCodes/{code} {
+      allow get: if isValidId(code) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(code)
+        && isValidSecurityCode(incoming())
+        && incoming().code == code
+        && incoming().assignedAt == request.time
+        && isAdmin();
+      allow update: if isValidId(code)
+        && isValidSecurityCode(incoming())
+        && incoming().code == existing().code
+        && incoming().assignedAt == existing().assignedAt
+        && isAdmin();
+      allow delete: if isValidId(code) && isAdmin();
+    }
+
+    match /batches/{batchId} {
+      allow get: if isValidId(batchId);
+      allow list: if resource.data.active == true || isAdmin();
+      allow create: if isValidId(batchId) && isValidBatch(incoming()) && incoming().updatedAt == request.time && isAdmin();
+      allow update: if isValidId(batchId) && isValidBatch(incoming()) && incoming().updatedAt == request.time && isAdmin();
+      allow delete: if isValidId(batchId) && isAdmin();
+    }
+
+    match /courses/{courseId} {
+      allow get: if isValidId(courseId);
+      allow list: if resource.data.active == true || isAdmin();
+      allow create: if isValidId(courseId) && isValidCourse(incoming()) && incoming().updatedAt == request.time && isAdmin();
+      allow update: if isValidId(courseId) && isValidCourse(incoming()) && incoming().updatedAt == request.time && isAdmin();
+      allow delete: if isValidId(courseId) && isAdmin();
+    }
+
+    match /fees/{feeId} {
+      allow get: if isValidId(feeId);
+      allow list: if resource.data.active == true || isAdmin();
+      allow create: if isValidId(feeId) && isValidFeeRule(incoming()) && incoming().updatedAt == request.time && isAdmin();
+      allow update: if isValidId(feeId) && isValidFeeRule(incoming()) && incoming().updatedAt == request.time && isAdmin();
+      allow delete: if isValidId(feeId) && isAdmin();
+    }
+
+    match /payments/{paymentId} {
+      allow get: if isValidId(paymentId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(paymentId) && isValidPayment(incoming()) && incoming().paidAt == request.time && isAdmin();
+      allow update: if isValidId(paymentId) && isValidPayment(incoming()) && incoming().paidAt == existing().paidAt && isAdmin();
+      allow delete: if isValidId(paymentId) && isAdmin();
+    }
+
+    match /banners/{bannerId} {
+      allow get: if isValidId(bannerId);
+      allow list: if resource.data.active == true || isAdmin();
+      allow create: if isValidId(bannerId) && isValidBanner(incoming()) && incoming().updatedAt == request.time && isAdmin();
+      allow update: if isValidId(bannerId) && isValidBanner(incoming()) && incoming().updatedAt == request.time && isAdmin();
+      allow delete: if isValidId(bannerId) && isAdmin();
+    }
+
+    match /gallery/{photoId} {
+      allow get: if isValidId(photoId);
+      allow list: if resource.data.active == true || isAdmin();
+      allow create: if isValidId(photoId) && isValidGalleryItem(incoming()) && incoming().createdAt == request.time && isAdmin();
+      allow update: if isValidId(photoId) && isValidGalleryItem(incoming()) && incoming().createdAt == existing().createdAt && isAdmin();
+      allow delete: if isValidId(photoId) && isAdmin();
+    }
+
+    match /notices/{noticeId} {
+      allow get: if isValidId(noticeId);
+      allow list: if resource.data.active == true || isAdmin();
+      allow create: if isValidId(noticeId) && isValidNotice(incoming()) && incoming().createdAt == request.time && incoming().updatedAt == request.time && isAdmin();
+      allow update: if isValidId(noticeId) && isValidNotice(incoming()) && incoming().createdAt == existing().createdAt && incoming().updatedAt == request.time && isAdmin();
+      allow delete: if isValidId(noticeId) && isAdmin();
+    }
+
+    match /scanHistory/{scanId} {
+      allow get: if isValidId(scanId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(scanId) && isValidScanHistory(incoming()) && incoming().scannedAt == request.time && isAdmin();
+      allow update: if false;
+      allow delete: if isValidId(scanId) && isAdmin();
+    }
+
+    match /settings/{settingId} {
+      allow get: if isValidId(settingId);
+      allow list: if isAdmin();
+      allow create: if isValidId(settingId) && isValidSettings(incoming()) && incoming().updatedAt == request.time && isAdmin();
+      allow update: if isValidId(settingId) && isValidSettings(incoming()) && incoming().updatedAt == request.time && isAdmin();
+      allow delete: if isValidId(settingId) && isAdmin();
+    }
+
+    match /privateMedia/{mediaId} {
+      allow get: if isValidId(mediaId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(mediaId) && isValidMediaBlob(incoming()) && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isValidId(mediaId) && isAdmin();
+    }
+
+    match /publicMedia/{mediaId} {
+      allow get: if isValidId(mediaId);
+      allow list: if isAdmin();
+      allow create: if isValidId(mediaId) && isValidMediaBlob(incoming()) && incoming().createdAt == request.time && isAdmin();
+      allow update: if false;
+      allow delete: if isValidId(mediaId) && isAdmin();
+    }
+  }
+}

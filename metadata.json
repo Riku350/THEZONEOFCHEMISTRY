@@ -1,0 +1,6 @@
+{
+  "name": "THE ZONE OF CHEMISTRY",
+  "description": "Coaching institute website and admission management system for THE ZONE OF CHEMISTRY by SONU SIR #BABA — online admissions, student ID cards, QR verification scanner, fee management, and admin dashboard.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

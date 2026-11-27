@@ -1,0 +1,426 @@
+{
+  "entities": {
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Authorized institute administrator account.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": { "type": "string", "enum": ["owner", "admin"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "displayName", "role", "createdAt"]
+    },
+    "AdmissionApplication": {
+      "title": "AdmissionApplication",
+      "description": "Student admission application submitted publicly without login.",
+      "type": "object",
+      "properties": {
+        "applicationNumber": { "type": "string", "minLength": 4, "maxLength": 40, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "trackingKey": { "type": "string", "minLength": 10, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "studentName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "studentMobile": { "type": "string", "minLength": 10, "maxLength": 15, "pattern": "^[0-9+\\-\\s]{10,15}$" },
+        "studentWhatsapp": { "type": "string", "minLength": 10, "maxLength": 15, "pattern": "^[0-9+\\-\\s]{10,15}$" },
+        "fatherName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "fatherMobile": { "type": "string", "minLength": 10, "maxLength": 15, "pattern": "^[0-9+\\-\\s]{10,15}$" },
+        "motherName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "motherMobile": { "type": "string", "minLength": 10, "maxLength": 15, "pattern": "^[0-9+\\-\\s]{10,15}$" },
+        "dob": { "type": "string", "minLength": 4, "maxLength": 20 },
+        "gender": { "type": "string", "enum": ["Male", "Female", "Other"] },
+        "address": { "type": "string", "minLength": 3, "maxLength": 400 },
+        "village": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "postOffice": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "district": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "state": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "pinCode": { "type": "string", "minLength": 6, "maxLength": 6, "pattern": "^[0-9]{6}$" },
+        "studentClass": { "type": "string", "enum": ["Class 10", "Class 11", "Class 12", "Other"] },
+        "stream": { "type": "string", "enum": ["Science", "PCM", "PCB", "Other"] },
+        "course": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "batch": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "photoUrl": { "type": "string", "maxLength": 2000 },
+        "photoMediaId": { "type": "string", "maxLength": 128 },
+        "idProofUrl": { "type": "string", "maxLength": 2000 },
+        "idProofMediaId": { "type": "string", "maxLength": 128 },
+        "marksheetUrl": { "type": "string", "maxLength": 2000 },
+        "marksheetMediaId": { "type": "string", "maxLength": 128 },
+        "feeAmount": { "type": "number" },
+        "paidAmount": { "type": "number" },
+        "paymentStatus": { "type": "string", "enum": ["PENDING", "PARTIAL", "PAID"] },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "declarationAccepted": { "type": "boolean" },
+        "studentId": { "type": "string", "maxLength": 64 },
+        "remarks": { "type": "string", "maxLength": 500 },
+        "submittedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "applicationNumber",
+        "trackingKey",
+        "studentName",
+        "studentMobile",
+        "studentWhatsapp",
+        "fatherName",
+        "fatherMobile",
+        "motherName",
+        "motherMobile",
+        "dob",
+        "gender",
+        "address",
+        "village",
+        "postOffice",
+        "district",
+        "state",
+        "pinCode",
+        "studentClass",
+        "stream",
+        "course",
+        "batch",
+        "feeAmount",
+        "paidAmount",
+        "paymentStatus",
+        "status",
+        "declarationAccepted",
+        "submittedAt",
+        "updatedAt"
+      ]
+    },
+    "ApplicationStatusLookup": {
+      "title": "ApplicationStatusLookup",
+      "description": "Non-PII status document keyed by applicationNumber_studentMobile for student self-tracking.",
+      "type": "object",
+      "properties": {
+        "applicationNumber": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "studentName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "course": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "batch": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "studentClass": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "paymentStatus": { "type": "string", "enum": ["PENDING", "PARTIAL", "PAID"] },
+        "feeAmount": { "type": "number" },
+        "paidAmount": { "type": "number" },
+        "studentId": { "type": "string", "maxLength": 64 },
+        "remarks": { "type": "string", "maxLength": 500 },
+        "submittedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "applicationNumber",
+        "studentName",
+        "course",
+        "batch",
+        "studentClass",
+        "status",
+        "paymentStatus",
+        "feeAmount",
+        "paidAmount",
+        "submittedAt",
+        "updatedAt"
+      ]
+    },
+    "StudentRecord": {
+      "title": "StudentRecord",
+      "description": "Permanent approved student record with unique studentId, 4-digit security code, QR token, and fee ledger.",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string", "minLength": 4, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "applicationId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "applicationNumber": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "securityCode": { "type": "string", "minLength": 4, "maxLength": 4, "pattern": "^[0-9]{4}$" },
+        "qrToken": { "type": "string", "minLength": 4, "maxLength": 120 },
+        "studentName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "studentMobile": { "type": "string", "minLength": 10, "maxLength": 15 },
+        "studentWhatsapp": { "type": "string", "minLength": 10, "maxLength": 15 },
+        "fatherName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "fatherMobile": { "type": "string", "minLength": 10, "maxLength": 15 },
+        "motherName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "motherMobile": { "type": "string", "minLength": 10, "maxLength": 15 },
+        "dob": { "type": "string", "maxLength": 20 },
+        "gender": { "type": "string", "enum": ["Male", "Female", "Other"] },
+        "address": { "type": "string", "maxLength": 400 },
+        "village": { "type": "string", "maxLength": 120 },
+        "postOffice": { "type": "string", "maxLength": 120 },
+        "district": { "type": "string", "maxLength": 120 },
+        "state": { "type": "string", "maxLength": 120 },
+        "pinCode": { "type": "string", "maxLength": 6 },
+        "studentClass": { "type": "string", "maxLength": 40 },
+        "stream": { "type": "string", "maxLength": 40 },
+        "course": { "type": "string", "maxLength": 100 },
+        "batch": { "type": "string", "maxLength": 80 },
+        "photoUrl": { "type": "string", "maxLength": 2000 },
+        "photoMediaId": { "type": "string", "maxLength": 128 },
+        "idProofUrl": { "type": "string", "maxLength": 2000 },
+        "idProofMediaId": { "type": "string", "maxLength": 128 },
+        "marksheetUrl": { "type": "string", "maxLength": 2000 },
+        "marksheetMediaId": { "type": "string", "maxLength": 128 },
+        "feeAmount": { "type": "number" },
+        "paidAmount": { "type": "number" },
+        "paymentStatus": { "type": "string", "enum": ["PENDING", "PARTIAL", "PAID"] },
+        "status": { "type": "string", "enum": ["active", "suspended"] },
+        "academicSession": { "type": "string", "maxLength": 40 },
+        "approvedAt": { "type": "string", "format": "date-time" },
+        "approvedBy": { "type": "string", "maxLength": 200 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "studentId",
+        "applicationId",
+        "applicationNumber",
+        "securityCode",
+        "qrToken",
+        "studentName",
+        "studentMobile",
+        "fatherName",
+        "studentClass",
+        "course",
+        "batch",
+        "feeAmount",
+        "paidAmount",
+        "paymentStatus",
+        "status",
+        "academicSession",
+        "approvedAt",
+        "updatedAt"
+      ]
+    },
+    "SecurityCodeLock": {
+      "title": "SecurityCodeLock",
+      "description": "Uniqueness lock ensuring every active student has a distinct 4-digit security code.",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "minLength": 4, "maxLength": 4, "pattern": "^[0-9]{4}$" },
+        "studentId": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "active": { "type": "boolean" },
+        "assignedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "studentId", "active", "assignedAt"]
+    },
+    "Batch": {
+      "title": "Batch",
+      "description": "Coaching batch timing slot and optional batch fee override.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "timing": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "capacity": { "type": "number" },
+        "feeOverride": { "type": "number" },
+        "active": { "type": "boolean" },
+        "order": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "timing", "active", "order", "updatedAt"]
+    },
+    "Course": {
+      "title": "Course",
+      "description": "Chemistry coaching course offering with syllabus highlights and standard fee.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "category": { "type": "string", "maxLength": 60 },
+        "targetClass": { "type": "string", "maxLength": 60 },
+        "description": { "type": "string", "maxLength": 600 },
+        "duration": { "type": "string", "maxLength": 60 },
+        "feeAmount": { "type": "number" },
+        "active": { "type": "boolean" },
+        "order": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "feeAmount", "active", "order", "updatedAt"]
+    },
+    "FeeRule": {
+      "title": "FeeRule",
+      "description": "Fee structure entry mapped by class, course, and/or batch.",
+      "type": "object",
+      "properties": {
+        "label": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "studentClass": { "type": "string", "maxLength": 40 },
+        "course": { "type": "string", "maxLength": 100 },
+        "batch": { "type": "string", "maxLength": 80 },
+        "amount": { "type": "number" },
+        "active": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["label", "amount", "active", "updatedAt"]
+    },
+    "PaymentRecord": {
+      "title": "PaymentRecord",
+      "description": "Admin-verified fee payment transaction and receipt data.",
+      "type": "object",
+      "properties": {
+        "receiptNumber": { "type": "string", "minLength": 4, "maxLength": 48 },
+        "studentId": { "type": "string", "maxLength": 64 },
+        "applicationId": { "type": "string", "maxLength": 128 },
+        "studentName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "course": { "type": "string", "maxLength": 100 },
+        "batch": { "type": "string", "maxLength": 80 },
+        "amount": { "type": "number" },
+        "method": { "type": "string", "enum": ["Cash", "UPI", "Bank Transfer", "Card", "Cheque"] },
+        "referenceNo": { "type": "string", "maxLength": 100 },
+        "notes": { "type": "string", "maxLength": 300 },
+        "recordedBy": { "type": "string", "maxLength": 200 },
+        "paidAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["receiptNumber", "studentName", "amount", "method", "recordedBy", "paidAt"]
+    },
+    "Banner": {
+      "title": "Banner",
+      "description": "Homepage announcement and promotional banner.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "minLength": 2, "maxLength": 140 },
+        "description": { "type": "string", "maxLength": 500 },
+        "announcement": { "type": "string", "maxLength": 240 },
+        "imageUrl": { "type": "string", "maxLength": 2000 },
+        "mediaId": { "type": "string", "maxLength": 128 },
+        "order": { "type": "number" },
+        "active": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "order", "active", "updatedAt"]
+    },
+    "GalleryItem": {
+      "title": "GalleryItem",
+      "description": "Institute event or classroom gallery photograph.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "minLength": 2, "maxLength": 140 },
+        "category": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "imageUrl": { "type": "string", "maxLength": 2000 },
+        "mediaId": { "type": "string", "maxLength": 128 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "category", "active", "createdAt"]
+    },
+    "Notice": {
+      "title": "Notice",
+      "description": "Public notice board announcement published by admin.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "content": { "type": "string", "minLength": 4, "maxLength": 1500 },
+        "category": { "type": "string", "enum": ["Admission", "Exam", "Schedule", "General"] },
+        "pinned": { "type": "boolean" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "content", "category", "pinned", "active", "createdAt", "updatedAt"]
+    },
+    "ScanHistoryEntry": {
+      "title": "ScanHistoryEntry",
+      "description": "Admin QR code verification log entry.",
+      "type": "object",
+      "properties": {
+        "scannedCode": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "studentId": { "type": "string", "maxLength": 64 },
+        "studentName": { "type": "string", "maxLength": 120 },
+        "statusResult": { "type": "string", "enum": ["VALID", "PENDING", "INVALID"] },
+        "reason": { "type": "string", "maxLength": 240 },
+        "scannedBy": { "type": "string", "maxLength": 200 },
+        "scannedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["scannedCode", "statusResult", "scannedBy", "scannedAt"]
+    },
+    "InstituteSettings": {
+      "title": "InstituteSettings",
+      "description": "Global institute configuration including standard fee, contact info, and admission toggle.",
+      "type": "object",
+      "properties": {
+        "instituteName": { "type": "string", "maxLength": 120 },
+        "teacherName": { "type": "string", "maxLength": 120 },
+        "tagline": { "type": "string", "maxLength": 200 },
+        "academicSession": { "type": "string", "maxLength": 40 },
+        "defaultFee": { "type": "number" },
+        "admissionsOpen": { "type": "boolean" },
+        "admissionHeadline": { "type": "string", "maxLength": 200 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "whatsappNumber": { "type": "string", "maxLength": 30 },
+        "email": { "type": "string", "maxLength": 160 },
+        "address": { "type": "string", "maxLength": 300 },
+        "signatureText": { "type": "string", "maxLength": 80 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["instituteName", "teacherName", "defaultFee", "admissionsOpen", "updatedAt"]
+    },
+    "MediaBlob": {
+      "title": "MediaBlob",
+      "description": "Compressed image fallback document stored under 450KB when Firebase Storage is unavailable.",
+      "type": "object",
+      "properties": {
+        "dataUrl": { "type": "string", "minLength": 20, "maxLength": 650000 },
+        "mimeType": { "type": "string", "maxLength": 60 },
+        "fileName": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["dataUrl", "mimeType", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Authorized admin UIDs."
+    },
+    "/applications/{applicationId}": {
+      "schema": { "$ref": "#/entities/AdmissionApplication" },
+      "description": "Submitted student admission applications."
+    },
+    "/applicationStatus/{trackingKey}": {
+      "schema": { "$ref": "#/entities/ApplicationStatusLookup" },
+      "description": "Non-PII application tracking record keyed by applicationNumber_studentMobile."
+    },
+    "/students/{studentId}": {
+      "schema": { "$ref": "#/entities/StudentRecord" },
+      "description": "Approved permanent student records."
+    },
+    "/securityCodes/{code}": {
+      "schema": { "$ref": "#/entities/SecurityCodeLock" },
+      "description": "Unique 4-digit security code registry."
+    },
+    "/batches/{batchId}": {
+      "schema": { "$ref": "#/entities/Batch" },
+      "description": "Batch schedule and batch fee overrides."
+    },
+    "/courses/{courseId}": {
+      "schema": { "$ref": "#/entities/Course" },
+      "description": "Available chemistry coaching courses."
+    },
+    "/fees/{feeId}": {
+      "schema": { "$ref": "#/entities/FeeRule" },
+      "description": "Fee structure rules by class, course, and batch."
+    },
+    "/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/PaymentRecord" },
+      "description": "Verified fee payment records and receipts."
+    },
+    "/banners/{bannerId}": {
+      "schema": { "$ref": "#/entities/Banner" },
+      "description": "Homepage banners managed by admin."
+    },
+    "/gallery/{photoId}": {
+      "schema": { "$ref": "#/entities/GalleryItem" },
+      "description": "Institute gallery photographs."
+    },
+    "/notices/{noticeId}": {
+      "schema": { "$ref": "#/entities/Notice" },
+      "description": "Public notice board announcements."
+    },
+    "/scanHistory/{scanId}": {
+      "schema": { "$ref": "#/entities/ScanHistoryEntry" },
+      "description": "QR scanner verification audit log."
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/InstituteSettings" },
+      "description": "Global institute settings."
+    },
+    "/privateMedia/{mediaId}": {
+      "schema": { "$ref": "#/entities/MediaBlob" },
+      "description": "Private student photos and identity documents."
+    },
+    "/publicMedia/{mediaId}": {
+      "schema": { "$ref": "#/entities/MediaBlob" },
+      "description": "Public banner and gallery images."
+    }
+  }
+}
