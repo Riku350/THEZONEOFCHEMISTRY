@@ -155,19 +155,22 @@ export function formatIstDateTime(val: TimestampLike | number | Date | null | un
   );
 }
 
-export function getClientIstNow(): ServerIstTime {
-  const now = new Date();
+let serverClockOffsetMs = 0;
+let lastServerClockSyncAt = 0;
+
+function buildIstTimeFromEpoch(epochMs: number): ServerIstTime {
+  const d = new Date(epochMs);
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: IST_TIMEZONE,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     weekday: 'short',
-  }).formatToParts(now);
+  }).formatToParts(d);
 
-  const yearStr = parts.find((p) => p.type === 'year')?.value || String(now.getFullYear());
-  const monthStr = parts.find((p) => p.type === 'month')?.value || String(now.getMonth() + 1).padStart(2, '0');
-  const dayStr = parts.find((p) => p.type === 'day')?.value || String(now.getDate()).padStart(2, '0');
+  const yearStr = parts.find((p) => p.type === 'year')?.value || String(d.getFullYear());
+  const monthStr = parts.find((p) => p.type === 'month')?.value || String(d.getMonth() + 1).padStart(2, '0');
+  const dayStr = parts.find((p) => p.type === 'day')?.value || String(d.getDate()).padStart(2, '0');
   const weekdayShort = parts.find((p) => p.type === 'weekday')?.value || 'Mon';
   const weekdayMap: Record<string, number> = {
     Sun: 0,
@@ -184,13 +187,13 @@ export function getClientIstNow(): ServerIstTime {
     minute: '2-digit',
     second: '2-digit',
     hour12: true,
-  }).format(now);
+  }).format(d);
 
   return {
     date: `${yearStr}-${monthStr}-${dayStr}`,
     time: timeStr,
-    iso: now.toISOString(),
-    epochMs: now.getTime(),
+    iso: d.toISOString(),
+    epochMs,
     year: Number(yearStr),
     month: Number(monthStr),
     day: Number(dayStr),
@@ -199,19 +202,62 @@ export function getClientIstNow(): ServerIstTime {
   };
 }
 
+export function getClientIstNow(): ServerIstTime {
+  return buildIstTimeFromEpoch(Date.now());
+}
+
+/**
+ * Synchronous IST timestamp adjusted by the pre-synced server clock offset.
+ * Eliminates a 150-350ms HTTP round-trip on every QR scan while Firestore
+ * security rules still enforce serverTimestamp() (`request.time`) on writes.
+ */
+export function getSyncedServerIstNow(): ServerIstTime {
+  if (Date.now() - lastServerClockSyncAt > 5 * 60 * 1000) {
+    void syncServerIstOffset();
+  }
+  return buildIstTimeFromEpoch(Date.now() + serverClockOffsetMs);
+}
+
+/**
+ * Warms and calibrates the server IST clock offset in the background.
+ */
+export async function syncServerIstOffset(): Promise<void> {
+  const start = Date.now();
+  try {
+    const res = await fetch('/api/time/ist', { cache: 'no-store' });
+    if (res.ok) {
+      const data = (await res.json()) as ServerIstTime;
+      if (data && typeof data.epochMs === 'number' && Number.isFinite(data.epochMs)) {
+        const end = Date.now();
+        const midpoint = start + (end - start) / 2;
+        serverClockOffsetMs = data.epochMs - midpoint;
+        lastServerClockSyncAt = end;
+      }
+    }
+  } catch {
+    // Non-fatal: client clock remains fallback; Firestore serverTimestamp() stays authoritative
+  }
+}
+
 export async function fetchServerIstTime(): Promise<ServerIstTime> {
+  const start = Date.now();
   try {
     const res = await fetch('/api/time/ist', { cache: 'no-store' });
     if (res.ok) {
       const data = (await res.json()) as ServerIstTime;
       if (data && typeof data.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(data.date)) {
+        if (typeof data.epochMs === 'number' && Number.isFinite(data.epochMs)) {
+          const end = Date.now();
+          serverClockOffsetMs = data.epochMs - (start + (end - start) / 2);
+          lastServerClockSyncAt = end;
+        }
         return data;
       }
     }
   } catch {
     // Fallback below if offline or preview proxy transient
   }
-  return getClientIstNow();
+  return getSyncedServerIstNow();
 }
 
 export interface ResolvedBatchSchedule {

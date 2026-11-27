@@ -148,11 +148,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     window.setTimeout(() => setToast(''), 4500);
   };
 
+  const [collectionsLoaded, setCollectionsLoaded] = useState({
+    applications: false,
+    students: false,
+    attendance: false,
+    batches: false,
+  });
+
   useEffect(() => {
     const unsub = subscribeAdminCollections({
-      onApplications: setApplications,
+      onApplications: (list) => {
+        setApplications(list);
+        setCollectionsLoaded((prev) => (prev.applications ? prev : { ...prev, applications: true }));
+      },
       onStudents: (list) => {
         setStudents(list);
+        setCollectionsLoaded((prev) => (prev.students ? prev : { ...prev, students: true }));
         setIdCardStudent((prev) =>
           prev ? list.find((s) => s.studentId === prev.studentId) || prev : null
         );
@@ -163,11 +174,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       onGallery: setGallery,
       onNotices: setNotices,
       onCourses: setCourses,
-      onBatches: setBatches,
+      onBatches: (list) => {
+        setBatches(list);
+        setCollectionsLoaded((prev) => (prev.batches ? prev : { ...prev, batches: true }));
+      },
       onFees: setFeeRules,
       onAdmins: setAdmins,
       onSettings: setSettings,
-      onAttendance: setAttendance,
+      onAttendance: (list) => {
+        setAttendance(list);
+        setCollectionsLoaded((prev) => (prev.attendance ? prev : { ...prev, attendance: true }));
+      },
       onAttendanceAuditLogs: setAttendanceAuditLogs,
       onAttendanceHolidays: setAttendanceHolidays,
       onError: (err) => setSyncError(err.message),
@@ -180,22 +197,41 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   }, [onPublicDataChanged]);
 
   const trackingBackfilledRef = useRef(false);
-  const attendanceBackfilledRef = useRef(false);
 
+  // Wait until BOTH applications AND students initial snapshots have arrived before backfilling tracking indexes
   useEffect(() => {
     if (trackingBackfilledRef.current) return;
+    if (!collectionsLoaded.applications || !collectionsLoaded.students) return;
     if (applications.length === 0) return;
     trackingBackfilledRef.current = true;
     void syncMissingTrackingRecords(applications, students, settings.academicSession);
-  }, [applications, students, settings.academicSession]);
+  }, [
+    applications,
+    students,
+    settings.academicSession,
+    collectionsLoaded.applications,
+    collectionsLoaded.students,
+  ]);
 
+  // Wait until students, attendance, AND batches have ALL loaded so public attendance ledgers are never overwritten with empty records
   useEffect(() => {
-    if (attendanceBackfilledRef.current) return;
+    if (!collectionsLoaded.students || !collectionsLoaded.attendance || !collectionsLoaded.batches) {
+      return;
+    }
     if (students.length === 0) return;
-    attendanceBackfilledRef.current = true;
-    const currentIstYear = getClientIstNow().year;
-    void syncApprovedStudentsPublicAttendance(students, attendance, batches, currentIstYear);
-  }, [students, attendance, batches]);
+    const timer = window.setTimeout(() => {
+      const currentIstYear = getClientIstNow().year;
+      void syncApprovedStudentsPublicAttendance(students, attendance, batches, currentIstYear);
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [
+    students,
+    attendance,
+    batches,
+    collectionsLoaded.students,
+    collectionsLoaded.attendance,
+    collectionsLoaded.batches,
+  ]);
 
   useEffect(() => {
     if (!selectedApp) return;
@@ -1151,6 +1187,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           {activeTab === 'scanner' && (
             <AdminQrScanner
               adminEmail={user.email || 'admin'}
+              students={students}
               batches={batches}
               attendance={attendance}
               scanHistory={scanHistory}

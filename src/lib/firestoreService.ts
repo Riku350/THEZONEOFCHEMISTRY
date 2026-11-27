@@ -60,9 +60,9 @@ import {
 import {
   buildAttendanceDocId,
   DEFAULT_SCHEDULED_DAYS,
-  fetchServerIstTime,
   formatIstDateYmd,
   formatIstTime,
+  getSyncedServerIstNow,
   resolveStudentBatch,
   toEpochMs,
 } from './attendanceUtils';
@@ -123,11 +123,78 @@ export function deriveAdmissionStage(
 }
 
 export function sanitizeId(raw: string): string {
-  return raw.replace(/[^a-zA-Z0-9_\-]/g, '-').slice(0, 120);
+  return String(raw ?? '').replace(/[^a-zA-Z0-9_\-]/g, '-').slice(0, 120);
 }
 
-export function cleanPhone(raw: string): string {
-  return raw.replace(/[^0-9]/g, '').slice(-10);
+export function cleanPhone(raw: unknown): string {
+  const str = String(raw ?? '').trim();
+  if (!str) return '';
+  let compact = str.replace(/[\s\-().]+/g, '');
+  if (compact.startsWith('+91')) {
+    compact = compact.slice(3);
+  } else if (compact.startsWith('0091')) {
+    compact = compact.slice(4);
+  } else if (compact.startsWith('91') && compact.length === 12) {
+    compact = compact.slice(2);
+  } else if (compact.startsWith('0') && compact.length === 11) {
+    compact = compact.slice(1);
+  }
+  const digitsOnly = compact.replace(/[^0-9]/g, '');
+  return digitsOnly.length > 10 ? digitsOnly.slice(-10) : digitsOnly;
+}
+
+export function normalizeIndianMobile(
+  raw: unknown
+): { ok: true; mobile10: string } | { ok: false; error: string } {
+  const str = String(raw ?? '').trim();
+  if (!str) {
+    return {
+      ok: false,
+      error: 'Invalid Mobile Number. Please enter a valid 10-digit Indian mobile number.',
+    };
+  }
+  let compact = str.replace(/[\s\-().]+/g, '');
+  if (compact.startsWith('+91')) {
+    compact = compact.slice(3);
+  } else if (compact.startsWith('0091')) {
+    compact = compact.slice(4);
+  } else if (compact.startsWith('91') && compact.length === 12) {
+    compact = compact.slice(2);
+  } else if (compact.startsWith('0') && compact.length === 11) {
+    compact = compact.slice(1);
+  }
+  if (!/^[6-9][0-9]{9}$/.test(compact)) {
+    return {
+      ok: false,
+      error:
+        'Invalid Mobile Number. Please enter a valid 10-digit Indian mobile number (e.g., 6299475970 or +91 6299475970).',
+    };
+  }
+  return { ok: true, mobile10: compact };
+}
+
+export function normalizeStudentId(
+  raw: unknown
+): { ok: true; studentId: string } | { ok: false; isApplicationNumber?: boolean; error: string } {
+  let cleaned = String(raw ?? '').trim().toUpperCase();
+  if (cleaned.startsWith('ZOC:')) {
+    cleaned = cleaned.slice(4).trim();
+  }
+  if (!cleaned || cleaned.length < 4 || cleaned.length > 64 || !/^[A-Z0-9_\-]+$/.test(cleaned)) {
+    return {
+      ok: false,
+      error: 'Invalid Student ID. Please enter your Student ID (e.g., ZOC-2026-123456).',
+    };
+  }
+  if (/^ZOC[0-9]{4}-[0-9]+$/.test(cleaned)) {
+    return {
+      ok: false,
+      isApplicationNumber: true,
+      error:
+        'Invalid Student ID. You entered an Application Number — please enter your official Student ID (e.g., ZOC-2026-123456).',
+    };
+  }
+  return { ok: true, studentId: cleaned };
 }
 
 export function generateApplicationNumber(): string {
@@ -975,8 +1042,10 @@ export async function approveApplicationAndCreateStudent(
           securityCode,
           qrToken,
           studentName: application.studentName,
-          studentMobile: application.studentMobile,
-          studentWhatsapp: application.studentWhatsapp || application.studentMobile,
+          studentMobile: cleanPhone(application.studentMobile) || String(application.studentMobile).trim(),
+          studentWhatsapp:
+            cleanPhone(application.studentWhatsapp || application.studentMobile) ||
+            String(application.studentWhatsapp || application.studentMobile).trim(),
           fatherName: application.fatherName,
           fatherMobile: application.fatherMobile || '',
           motherName: application.motherName || '',
@@ -1072,6 +1141,13 @@ export async function approveApplicationAndCreateStudent(
         }).catch((syncErr) => console.warn('Tracking sync after approval warning:', syncErr));
         await syncStudentAttendanceLookupIndex(result.student).catch((syncErr) =>
           console.warn('Attendance lookup sync after approval warning:', syncErr)
+        );
+        await syncStudentPublicAttendanceYear(
+          result.student,
+          [],
+          getSyncedServerIstNow().year
+        ).catch((syncErr) =>
+          console.warn('Public attendance ledger init after approval warning:', syncErr)
         );
         return result.student;
       }
@@ -2347,6 +2423,26 @@ async function buildAttendanceLookupEntryPayload(
 }
 
 /**
+ * Caps total inline photoDataUrl size across entries sharing one mobile lookup document
+ * so multi-student mobile buckets never approach Firestore's 1MB document ceiling.
+ */
+function capMobileBucketEntries(
+  entries: AttendanceLookupEntry[]
+): Omit<AttendanceLookupEntry, '_legacyMobile'>[] {
+  const MAX_TOTAL_PHOTO_BYTES = 550000;
+  let runningBytes = 0;
+  return entries.slice(0, 10).map((item) => {
+    const { _legacyMobile: _ignored, ...clean } = item;
+    const rawPhoto = typeof clean.photoDataUrl === 'string' ? clean.photoDataUrl : '';
+    if (rawPhoto && runningBytes + rawPhoto.length <= MAX_TOTAL_PHOTO_BYTES) {
+      runningBytes += rawPhoto.length;
+      return clean;
+    }
+    return { ...clean, photoDataUrl: '' };
+  });
+}
+
+/**
  * Admin-only synchronizer maintaining /attendanceLookupIndex for ONLY approved & active students.
  * Suspended students are immediately removed from both ID and mobile lookup indexes.
  */
@@ -2355,7 +2451,7 @@ export async function syncStudentAttendanceLookupIndex(
   previousMobile?: string
 ): Promise<void> {
   const normId = sanitizeId((student.studentId || '').trim().toUpperCase());
-  const cleanedMobile = cleanPhone(student.studentMobile);
+  const cleanedMobile = cleanPhone(student.studentMobile || student.studentWhatsapp || '');
   if (normId.length < 4 || cleanedMobile.length !== 10) return;
 
   const [idLookupKey, mobLookupKey] = await Promise.all([
@@ -2391,7 +2487,7 @@ export async function syncStudentAttendanceLookupIndex(
             (e) => e.studentId !== normId
           )
         : [];
-    const nextMobEntries = [...existingEntries, entry].slice(0, 10);
+    const nextMobEntries = capMobileBucketEntries([...existingEntries, entry]);
     batch.set(mobRef, {
       lookupType: 'mobile',
       entries: nextMobEntries,
@@ -2412,7 +2508,7 @@ export async function syncStudentAttendanceLookupIndex(
       } else {
         batch.set(mobRef, {
           lookupType: 'mobile',
-          entries: remaining,
+          entries: capMobileBucketEntries(remaining),
           updatedAt: nowTs,
         });
       }
@@ -2434,7 +2530,7 @@ export async function syncStudentAttendanceLookupIndex(
       } else {
         batch.set(prevMobRef, {
           lookupType: 'mobile',
-          entries: remaining,
+          entries: capMobileBucketEntries(remaining),
           updatedAt: nowTs,
         });
       }
@@ -2455,14 +2551,14 @@ export async function syncStudentPublicAttendanceYear(
   year: number,
   extraRecord?: { date: string; entry: StudentAttendanceDayEntry }
 ): Promise<void> {
-  const cleanedMobile = cleanPhone(student.studentMobile);
-  if (cleanedMobile.length !== 10) return;
+  const normId = sanitizeId((student.studentId || '').trim().toUpperCase());
+  if (normId.length < 4) return;
 
+  const cleanedMobile = cleanPhone(student.studentMobile || student.studentWhatsapp || '');
   const resolvedBatch = resolveStudentBatch(student.batch, batches);
-  const [attIdKey, attLegacyKey] = await Promise.all([
-    buildPublicAttendanceByIdKey(student.studentId, year),
-    buildPublicAttendanceKey(student.studentId, cleanedMobile, year),
-  ]);
+  const attIdKey = await buildPublicAttendanceByIdKey(normId, year);
+  const attLegacyKey =
+    cleanedMobile.length === 10 ? await buildPublicAttendanceKey(normId, cleanedMobile, year) : '';
   const enrolledDate = formatIstDateYmd(student.approvedAt) || '';
 
   try {
@@ -2477,7 +2573,7 @@ export async function syncStudentPublicAttendanceYear(
           status: data.attendanceStatus,
           entryTimeMs: toEpochMs(data.entryTime),
           exitTimeMs: toEpochMs(data.exitTime),
-          batchTiming: data.batchTiming || resolvedBatch.batchTiming,
+          batchTiming: (data.batchTiming || resolvedBatch.batchTiming).slice(0, 80),
         };
       }
     });
@@ -2487,10 +2583,10 @@ export async function syncStudentPublicAttendanceYear(
     }
 
     const ledgerPayload = {
-      studentId: student.studentId,
+      studentId: normId,
       year,
-      batchId: resolvedBatch.batchId,
-      batchTiming: resolvedBatch.batchTiming,
+      batchId: resolvedBatch.batchId.slice(0, 100) || 'default_batch',
+      batchTiming: resolvedBatch.batchTiming.slice(0, 80) || 'Regular Batch',
       enrolledDate,
       scheduledDays: resolvedBatch.scheduledDays,
       records,
@@ -2499,7 +2595,9 @@ export async function syncStudentPublicAttendanceYear(
 
     const batch = writeBatch(db);
     batch.set(doc(db, 'studentAttendancePublic', attIdKey), ledgerPayload);
-    batch.set(doc(db, 'studentAttendancePublic', attLegacyKey), ledgerPayload);
+    if (attLegacyKey) {
+      batch.set(doc(db, 'studentAttendancePublic', attLegacyKey), ledgerPayload);
+    }
     await batch.commit();
 
     await syncStudentAttendanceLookupIndex(student).catch(() => {
@@ -2531,127 +2629,124 @@ export interface QrAttendanceResult {
   entryTimeLabel?: string;
   exitTimeLabel?: string;
   attendanceId?: string;
+  latencyMs?: number;
 }
 
 /**
- * Automatic Continuous QR Attendance Transaction:
- * - Fetches server-authoritative IST date & time (/api/time/ist)
- * - Verifies student against Firestore /students/{studentId}
- * - Rejects suspended, pending, rejected, or invalid QR codes
- * - Uses deterministic doc ID att_{studentId}_{batchId}_{YYYY-MM-DD} inside a Firestore transaction
+ * Ultra-Fast Automatic Continuous QR Attendance Transaction:
+ * - Uses pre-synced server IST clock offset (0ms blocking HTTP latency) while
+ *   Firestore security rules strictly enforce serverTimestamp() (`request.time`)
+ * - Fetches only the required /students/{studentId} and /attendance/{attendanceId}
+ *   documents inside a single atomic Firestore transaction (parallelized in 1 RTT
+ *   when a speculative batch hint is available — hints are never trusted for auth)
+ * - Strictly verifies student exists and status === 'active' against Firebase
  * - Guarantees max one valid attendance record per student per batch per day
- * - Optionally records separate Exit time when enabled by admin (with 60s anti-bounce guard)
- * - Immediately syncs OTP-gated student public attendance ledger
+ * - Optionally records separate Exit time when enabled by admin (60s anti-bounce)
+ * - Runs scan audit logging and public attendance sync non-blockingly after commit
  */
 export async function recordQrAttendanceTransaction(
   rawQrText: string,
   batches: BatchItem[],
   adminEmail: string,
-  enableExitTracking = false
+  enableExitTracking = false,
+  studentBatchHintMap?: Map<string, string>
 ): Promise<QrAttendanceResult> {
+  const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const elapsed = () =>
+    Math.max(1, Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt));
+
   const cleanedRaw = rawQrText.trim().slice(0, 180);
   const extractedId = cleanedRaw.startsWith('ZOC:') ? cleanedRaw.slice(4).trim() : cleanedRaw;
   const isIdSafe = /^[a-zA-Z0-9_\-]{3,128}$/.test(extractedId);
 
-  const serverIst = await fetchServerIstTime();
+  const serverIst = getSyncedServerIstNow();
   const istDate = serverIst.date;
   const timeLabel = `${serverIst.time} IST`;
 
-  const writeScanAudit = async (
+  const writeScanAudit = (
     statusResult: ScanStatusResult,
     reason: string,
     studentId = '',
     studentName = 'Unknown'
   ) => {
     const scanId = `SCAN_${Date.now()}_${Math.floor(100 + Math.random() * 900)}`;
-    try {
-      await setDoc(doc(db, 'scanHistory', scanId), {
-        scannedCode: cleanedRaw || 'EMPTY',
-        studentId: studentId.slice(0, 64),
-        studentName: studentName.slice(0, 120),
-        statusResult,
-        reason: reason.slice(0, 240),
-        scannedBy: adminEmail,
-        scannedAt: serverTimestamp(),
-      });
-    } catch (e) {
+    void setDoc(doc(db, 'scanHistory', scanId), {
+      scannedCode: cleanedRaw || 'EMPTY',
+      studentId: studentId.slice(0, 64),
+      studentName: studentName.slice(0, 120),
+      statusResult,
+      reason: reason.slice(0, 240),
+      scannedBy: adminEmail,
+      scannedAt: serverTimestamp(),
+    }).catch((e) => {
       console.warn('Scan audit write warning:', e);
-    }
+    });
   };
 
   if (!isIdSafe) {
-    const msg = 'Invalid QR code format — not a registered institute Student ID.';
-    await writeScanAudit('INVALID', msg);
+    const msg = 'Not a valid institute Student ID QR code.';
+    writeScanAudit('INVALID', msg);
     return {
       outcome: 'REJECTED_INVALID',
-      title: 'Invalid QR Code',
+      title: 'Invalid Student ID',
       message: msg,
       scannedCode: cleanedRaw,
       attendanceDate: istDate,
       timeLabel,
+      latencyMs: elapsed(),
     };
   }
 
-  try {
-    // Pre-check student or application reference to obtain studentId
-    let targetStudentId = extractedId;
-    const directSnap = await getDoc(doc(db, 'students', extractedId));
-    if (!directSnap.exists()) {
-      const appSnap = await getDoc(doc(db, 'applications', extractedId));
-      if (appSnap.exists()) {
-        const appData = { id: appSnap.id, ...appSnap.data() } as AdmissionApplication;
-        if (appData.status === 'pending') {
-          const msg = 'Admission application is still PENDING approval.';
-          await writeScanAudit('PENDING', msg, appData.applicationNumber, appData.studentName);
-          return {
-            outcome: 'REJECTED_PENDING',
-            title: 'Admission Pending',
-            message: msg,
-            scannedCode: cleanedRaw,
-            attendanceDate: istDate,
-            timeLabel,
-            application: appData,
-          };
-        }
-        if (appData.status === 'rejected') {
-          const msg = 'Admission application was REJECTED.';
-          await writeScanAudit('INVALID', msg, appData.applicationNumber, appData.studentName);
-          return {
-            outcome: 'REJECTED_INVALID',
-            title: 'Application Rejected',
-            message: msg,
-            scannedCode: cleanedRaw,
-            attendanceDate: istDate,
-            timeLabel,
-            application: appData,
-          };
-        }
-        if (appData.status === 'approved' && appData.studentId) {
-          targetStudentId = appData.studentId;
-        }
-      }
-    }
+  type TxInnerResult =
+    | { notFound: true }
+    | {
+        notFound: false;
+        outcome: QrAttendanceOutcome;
+        title: string;
+        message: string;
+        student: StudentRecord;
+        batchTiming?: string;
+        attendanceId?: string;
+        entryTimeLabel?: string;
+        exitTimeLabel?: string;
+        entryMs?: number | null;
+        exitMs?: number | null;
+      };
 
-    // Atomic transaction on /students/{targetStudentId} + /attendance/{attendanceId}
-    const txResult = await runTransaction(db, async (tx) => {
+  const executeStudentTransaction = async (targetStudentId: string): Promise<TxInnerResult> => {
+    return runTransaction(db, async (tx) => {
       const stuRef = doc(db, 'students', targetStudentId);
-      const stuSnap = await tx.get(stuRef);
+
+      // Speculative 1-RTT parallel read using read-only batch hint (NEVER trusted for auth or write)
+      const hintBatch = studentBatchHintMap?.get(targetStudentId);
+      let predictedAttId: string | null = null;
+      let stuSnap;
+      let preAttSnap = null;
+
+      if (hintBatch) {
+        const hintResolved = resolveStudentBatch(hintBatch, batches);
+        predictedAttId = buildAttendanceDocId(targetStudentId, hintResolved.batchId, istDate);
+        const [sSnap, aSnap] = await Promise.all([
+          tx.get(stuRef),
+          tx.get(doc(db, 'attendance', predictedAttId)),
+        ]);
+        stuSnap = sSnap;
+        preAttSnap = aSnap;
+      } else {
+        stuSnap = await tx.get(stuRef);
+      }
 
       if (!stuSnap.exists()) {
-        return {
-          outcome: 'REJECTED_INVALID' as const,
-          title: 'Student Not Found',
-          message: 'No approved student record matches this QR code.',
-          student: undefined,
-        };
+        return { notFound: true as const };
       }
 
       const student = { id: stuSnap.id, ...stuSnap.data() } as StudentRecord;
       if (student.status !== 'active') {
         return {
+          notFound: false as const,
           outcome: 'REJECTED_SUSPENDED' as const,
           title: 'Student Suspended',
-          message: 'Student ID is currently SUSPENDED. Attendance cannot be recorded.',
+          message: 'Student ID is suspended. Attendance cannot be recorded.',
           student,
         };
       }
@@ -2659,7 +2754,8 @@ export async function recordQrAttendanceTransaction(
       const resolvedBatch = resolveStudentBatch(student.batch, batches);
       const attendanceId = buildAttendanceDocId(student.studentId, resolvedBatch.batchId, istDate);
       const attRef = doc(db, 'attendance', attendanceId);
-      const attSnap = await tx.get(attRef);
+      const attSnap =
+        preAttSnap && predictedAttId === attendanceId ? preAttSnap : await tx.get(attRef);
       const nowTs = serverTimestamp();
 
       if (!attSnap.exists()) {
@@ -2681,8 +2777,9 @@ export async function recordQrAttendanceTransaction(
         });
 
         return {
+          notFound: false as const,
           outcome: 'MARKED_PRESENT' as const,
-          title: 'Attendance Marked Present',
+          title: 'Attendance Marked Successfully',
           message: `Present recorded for ${resolvedBatch.batchTiming}.`,
           student,
           batchTiming: resolvedBatch.batchTiming,
@@ -2698,7 +2795,6 @@ export async function recordQrAttendanceTransaction(
       const existingExitMs = toEpochMs(existing.exitTime);
 
       if (existing.attendanceStatus === 'Absent') {
-        // Student was earlier manually marked Absent, now checked in via QR
         tx.update(attRef, {
           attendanceStatus: 'Present',
           entryTime: nowTs,
@@ -2708,8 +2804,9 @@ export async function recordQrAttendanceTransaction(
           updatedAt: nowTs,
         });
         return {
+          notFound: false as const,
           outcome: 'MARKED_PRESENT' as const,
-          title: 'Attendance Marked Present',
+          title: 'Attendance Marked Successfully',
           message: `Updated to Present for ${resolvedBatch.batchTiming}.`,
           student,
           batchTiming: resolvedBatch.batchTiming,
@@ -2731,6 +2828,7 @@ export async function recordQrAttendanceTransaction(
             updatedAt: nowTs,
           });
           return {
+            notFound: false as const,
             outcome: 'EXIT_RECORDED' as const,
             title: 'Exit Time Recorded',
             message: `Exit logged at ${timeLabel}.`,
@@ -2744,9 +2842,10 @@ export async function recordQrAttendanceTransaction(
           };
         }
         return {
+          notFound: false as const,
           outcome: 'ALREADY_PRESENT' as const,
           title: 'Already Marked Present',
-          message: `Entry already recorded at ${existingEntryMs ? formatIstTime(existingEntryMs) : 'today'}. Wait 1 minute to scan exit.`,
+          message: `Entry recorded at ${existingEntryMs ? formatIstTime(existingEntryMs) : 'today'}. Wait 1 minute to scan exit.`,
           student,
           batchTiming: existing.batchTiming || resolvedBatch.batchTiming,
           attendanceId,
@@ -2757,6 +2856,7 @@ export async function recordQrAttendanceTransaction(
       }
 
       return {
+        notFound: false as const,
         outcome: 'ALREADY_PRESENT' as const,
         title: 'Already Marked Present',
         message: existingExitMs
@@ -2771,39 +2871,94 @@ export async function recordQrAttendanceTransaction(
         exitMs: existingExitMs,
       };
     });
+  };
 
-    // Write scan audit log + sync student public attendance
+  try {
+    let txResult = await executeStudentTransaction(extractedId);
+
+    // Rare fallback: only inspect /applications/{extractedId} if no student doc matched directly
+    if (txResult.notFound) {
+      const appSnap = await getDoc(doc(db, 'applications', extractedId));
+      if (appSnap.exists()) {
+        const appData = { id: appSnap.id, ...appSnap.data() } as AdmissionApplication;
+        if (appData.status === 'pending') {
+          const msg = 'Admission application is still pending approval.';
+          writeScanAudit('PENDING', msg, appData.applicationNumber, appData.studentName);
+          return {
+            outcome: 'REJECTED_PENDING',
+            title: 'Admission Pending',
+            message: msg,
+            scannedCode: cleanedRaw,
+            attendanceDate: istDate,
+            timeLabel,
+            application: appData,
+            latencyMs: elapsed(),
+          };
+        }
+        if (appData.status === 'rejected') {
+          const msg = 'Admission application was rejected.';
+          writeScanAudit('INVALID', msg, appData.applicationNumber, appData.studentName);
+          return {
+            outcome: 'REJECTED_INVALID',
+            title: 'Invalid Student ID',
+            message: msg,
+            scannedCode: cleanedRaw,
+            attendanceDate: istDate,
+            timeLabel,
+            application: appData,
+            latencyMs: elapsed(),
+          };
+        }
+        if (appData.status === 'approved' && appData.studentId) {
+          txResult = await executeStudentTransaction(appData.studentId);
+        }
+      }
+    }
+
+    if (txResult.notFound) {
+      const msg = 'No approved student record matches this QR code.';
+      writeScanAudit('INVALID', msg, extractedId, 'Unknown');
+      return {
+        outcome: 'REJECTED_INVALID',
+        title: 'Invalid Student ID',
+        message: msg,
+        scannedCode: cleanedRaw,
+        attendanceDate: istDate,
+        timeLabel,
+        latencyMs: elapsed(),
+      };
+    }
+
+    // Non-blocking audit log & student public attendance ledger sync (0ms impact on scanner UI)
     if (txResult.outcome === 'MARKED_PRESENT' || txResult.outcome === 'EXIT_RECORDED') {
-      void writeScanAudit(
+      writeScanAudit(
         'VALID',
         `${txResult.title} (${istDate})`,
-        txResult.student?.studentId,
-        txResult.student?.studentName
+        txResult.student.studentId,
+        txResult.student.studentName
       );
-      if (txResult.student) {
-        void syncStudentPublicAttendanceYear(txResult.student, batches, serverIst.year, {
-          date: istDate,
-          entry: {
-            status: 'Present',
-            entryTimeMs: txResult.entryMs ?? serverIst.epochMs,
-            exitTimeMs: txResult.exitMs ?? null,
-            batchTiming: txResult.batchTiming || txResult.student.batch,
-          },
-        });
-      }
+      void syncStudentPublicAttendanceYear(txResult.student, batches, serverIst.year, {
+        date: istDate,
+        entry: {
+          status: 'Present',
+          entryTimeMs: txResult.entryMs ?? serverIst.epochMs,
+          exitTimeMs: txResult.exitMs ?? null,
+          batchTiming: txResult.batchTiming || txResult.student.batch,
+        },
+      });
     } else if (txResult.outcome === 'ALREADY_PRESENT') {
-      void writeScanAudit(
+      writeScanAudit(
         'VALID',
         `Already Marked Present (${istDate})`,
-        txResult.student?.studentId,
-        txResult.student?.studentName
+        txResult.student.studentId,
+        txResult.student.studentName
       );
     } else {
-      void writeScanAudit(
+      writeScanAudit(
         'INVALID',
         txResult.message,
-        txResult.student?.studentId || extractedId,
-        txResult.student?.studentName || 'Unknown'
+        txResult.student.studentId || extractedId,
+        txResult.student.studentName || 'Unknown'
       );
     }
 
@@ -2819,6 +2974,7 @@ export async function recordQrAttendanceTransaction(
       attendanceId: txResult.attendanceId,
       entryTimeLabel: txResult.entryTimeLabel,
       exitTimeLabel: txResult.exitTimeLabel,
+      latencyMs: elapsed(),
     };
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `attendance/${extractedId}`);
@@ -2977,8 +3133,9 @@ export async function fetchPublicAttendanceHolidays(): Promise<AttendanceHoliday
 export async function lookupActiveStudentsForAttendanceByMobile(
   rawMobile: string
 ): Promise<AttendanceLookupEntry[]> {
-  const cleaned = cleanPhone(rawMobile);
-  if (cleaned.length !== 10) return [];
+  const check = normalizeIndianMobile(rawMobile);
+  if (!check.ok) return [];
+  const cleaned = check.mobile10;
 
   const mobLookupKey = await buildAttendanceMobileLookupKey(cleaned);
   try {
@@ -3050,15 +3207,18 @@ export async function lookupActiveStudentsForAttendanceByMobile(
 export async function lookupActiveStudentsForAttendanceById(
   rawStudentId: string
 ): Promise<AttendanceLookupEntry[]> {
-  const normId = sanitizeId(rawStudentId.trim().toUpperCase());
-  if (normId.length < 4) return [];
+  const idCheck = normalizeStudentId(rawStudentId);
+  if (!idCheck.ok) return [];
+  const normId = sanitizeId(idCheck.studentId);
 
   const idLookupKey = await buildAttendanceIdLookupKey(normId);
   try {
     const snap = await getDoc(doc(db, 'attendanceLookupIndex', idLookupKey));
     if (!snap.exists()) return [];
     const data = snap.data() as AttendanceLookupIndexDoc;
-    return Array.isArray(data.entries) ? data.entries : [];
+    return Array.isArray(data.entries)
+      ? data.entries.filter((e) => e.studentId?.toUpperCase() === normId)
+      : [];
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, `attendanceLookupIndex/${idLookupKey}`);
   }
@@ -3108,32 +3268,56 @@ export async function fetchVerifiedStudentAttendance(
   return fetchStudentAttendanceById(studentId, year, verifiedMobile);
 }
 
+function buildRecordsFingerprint(records: Record<string, StudentAttendanceDayEntry>): string {
+  return Object.keys(records)
+    .sort()
+    .map((date) => {
+      const r = records[date];
+      return `${date}:${r.status}:${r.entryTimeMs ?? ''}:${r.exitTimeMs ?? ''}`;
+    })
+    .join('|');
+}
+
 /**
  * Silent admin backfill ensuring every approved & active student has both:
  * 1) /attendanceLookupIndex (ID & Mobile buckets for direct no-OTP attendance lookup), and
- * 2) /studentAttendancePublic (attid_ + legacy attpub_ yearly ledgers).
+ * 2) /studentAttendancePublic (attid_ + legacy attpub_ yearly ledgers for all active years).
  * Suspended students are automatically removed from /attendanceLookupIndex.
  */
 export async function syncApprovedStudentsPublicAttendance(
   students: StudentRecord[],
   attendance: AttendanceRecord[],
   batches: BatchItem[],
-  year: number
+  currentYear: number
 ): Promise<void> {
-  const byStudent = new Map<string, AttendanceRecord[]>();
+  // Collect all years present in attendance records plus current IST year
+  const yearsSet = new Set<number>([currentYear]);
   for (const r of attendance) {
-    if (!r.attendanceDate.startsWith(`${year}-`)) continue;
-    const arr = byStudent.get(r.studentId) || [];
+    const yr = Number((r.attendanceDate || '').slice(0, 4));
+    if (Number.isInteger(yr) && yr >= 2020 && yr <= 2100) {
+      yearsSet.add(yr);
+    }
+  }
+  const years = Array.from(yearsSet).sort((a, b) => b - a);
+
+  const byStudentYear = new Map<string, AttendanceRecord[]>();
+  for (const r of attendance) {
+    const yr = Number((r.attendanceDate || '').slice(0, 4));
+    if (!Number.isInteger(yr)) continue;
+    const key = `${r.studentId.trim().toUpperCase()}::${yr}`;
+    const arr = byStudentYear.get(key) || [];
     arr.push(r);
-    byStudent.set(r.studentId, arr);
+    byStudentYear.set(key, arr);
   }
 
   // Group active approved students by 10-digit mobile for clean atomic mobile buckets
   const activeByMobile = new Map<string, AttendanceLookupEntry[]>();
 
   for (const stu of students) {
-    const cleanedMobile = cleanPhone(stu.studentMobile);
-    if (cleanedMobile.length !== 10) continue;
+    const normId = sanitizeId((stu.studentId || '').trim().toUpperCase());
+    if (normId.length < 4) continue;
+
+    const cleanedMobile = cleanPhone(stu.studentMobile || stu.studentWhatsapp || '');
 
     if (stu.status !== 'active') {
       // Ensure suspended student is purged from direct attendance lookup index
@@ -3147,11 +3331,7 @@ export async function syncApprovedStudentsPublicAttendance(
 
     try {
       const resolvedBatch = resolveStudentBatch(stu.batch, batches);
-      const [attIdKey, attLegacyKey, idLookupKey] = await Promise.all([
-        buildPublicAttendanceByIdKey(stu.studentId, year),
-        buildPublicAttendanceKey(stu.studentId, cleanedMobile, year),
-        buildAttendanceIdLookupKey(stu.studentId),
-      ]);
+      const idLookupKey = await buildAttendanceIdLookupKey(normId);
 
       // 1. Sync /attendanceLookupIndex ID doc & collect entry for mobile bucket
       const idSnap = await getDoc(doc(db, 'attendanceLookupIndex', idLookupKey)).catch(() => null);
@@ -3163,13 +3343,17 @@ export async function syncApprovedStudentsPublicAttendance(
           : '';
       const entry = await buildAttendanceLookupEntryPayload(stu, existingPhotoDataUrl);
 
-      const mobList = activeByMobile.get(cleanedMobile) || [];
-      mobList.push(entry);
-      activeByMobile.set(cleanedMobile, mobList);
+      if (cleanedMobile.length === 10) {
+        const mobList = activeByMobile.get(cleanedMobile) || [];
+        mobList.push(entry);
+        activeByMobile.set(cleanedMobile, mobList);
+      }
 
       const needsIdIndexWrite =
         !idSnap?.exists() ||
         idSnap.data().entries?.[0]?.studentName !== entry.studentName ||
+        idSnap.data().entries?.[0]?.fatherName !== entry.fatherName ||
+        idSnap.data().entries?.[0]?.studentClass !== entry.studentClass ||
         idSnap.data().entries?.[0]?.batch !== entry.batch ||
         idSnap.data().entries?.[0]?.course !== entry.course ||
         idSnap.data().entries?.[0]?.photoUrl !== entry.photoUrl;
@@ -3182,47 +3366,62 @@ export async function syncApprovedStudentsPublicAttendance(
         });
       }
 
-      // 2. Sync /studentAttendancePublic yearly ledgers (attid_ + attpub_)
-      const stuRecords = byStudent.get(stu.studentId) || [];
-      const existingSnap = await getDoc(doc(db, 'studentAttendancePublic', attIdKey));
-      if (existingSnap.exists()) {
-        const existingData = existingSnap.data() as StudentAttendancePublicDoc;
-        const existingCount = Object.keys(existingData.records || {}).length;
-        if (
-          existingCount === stuRecords.length &&
-          existingData.batchId === resolvedBatch.batchId &&
-          JSON.stringify(existingData.scheduledDays || []) ===
-            JSON.stringify(resolvedBatch.scheduledDays)
-        ) {
-          continue;
+      // 2. Sync /studentAttendancePublic yearly ledgers (attid_ + attpub_) for each active year
+      for (const year of years) {
+        const stuRecords = byStudentYear.get(`${normId}::${year}`) || [];
+        if (year !== currentYear && stuRecords.length === 0) continue;
+
+        const [attIdKey, attLegacyKey] = await Promise.all([
+          buildPublicAttendanceByIdKey(normId, year),
+          cleanedMobile.length === 10
+            ? buildPublicAttendanceKey(normId, cleanedMobile, year)
+            : Promise.resolve(''),
+        ]);
+
+        const records: Record<string, StudentAttendanceDayEntry> = {};
+        for (const r of stuRecords) {
+          records[r.attendanceDate] = {
+            status: r.attendanceStatus,
+            entryTimeMs: toEpochMs(r.entryTime),
+            exitTimeMs: toEpochMs(r.exitTime),
+            batchTiming: (r.batchTiming || resolvedBatch.batchTiming).slice(0, 80),
+          };
         }
-      }
 
-      const records: Record<string, StudentAttendanceDayEntry> = {};
-      for (const r of stuRecords) {
-        records[r.attendanceDate] = {
-          status: r.attendanceStatus,
-          entryTimeMs: toEpochMs(r.entryTime),
-          exitTimeMs: toEpochMs(r.exitTime),
-          batchTiming: r.batchTiming || resolvedBatch.batchTiming,
+        const nextFingerprint = buildRecordsFingerprint(records);
+        const existingSnap = await getDoc(doc(db, 'studentAttendancePublic', attIdKey));
+        if (existingSnap.exists()) {
+          const existingData = existingSnap.data() as StudentAttendancePublicDoc;
+          const existingFingerprint = buildRecordsFingerprint(existingData.records || {});
+          if (
+            existingFingerprint === nextFingerprint &&
+            existingData.batchId === resolvedBatch.batchId &&
+            existingData.batchTiming === resolvedBatch.batchTiming &&
+            JSON.stringify(existingData.scheduledDays || []) ===
+              JSON.stringify(resolvedBatch.scheduledDays)
+          ) {
+            continue;
+          }
+        }
+
+        const ledgerPayload = {
+          studentId: normId,
+          year,
+          batchId: resolvedBatch.batchId.slice(0, 100) || 'default_batch',
+          batchTiming: resolvedBatch.batchTiming.slice(0, 80) || 'Regular Batch',
+          enrolledDate: formatIstDateYmd(stu.approvedAt) || '',
+          scheduledDays: resolvedBatch.scheduledDays,
+          records,
+          updatedAt: serverTimestamp(),
         };
+
+        const batch = writeBatch(db);
+        batch.set(doc(db, 'studentAttendancePublic', attIdKey), ledgerPayload);
+        if (attLegacyKey) {
+          batch.set(doc(db, 'studentAttendancePublic', attLegacyKey), ledgerPayload);
+        }
+        await batch.commit();
       }
-
-      const ledgerPayload = {
-        studentId: stu.studentId,
-        year,
-        batchId: resolvedBatch.batchId,
-        batchTiming: resolvedBatch.batchTiming,
-        enrolledDate: formatIstDateYmd(stu.approvedAt) || '',
-        scheduledDays: resolvedBatch.scheduledDays,
-        records,
-        updatedAt: serverTimestamp(),
-      };
-
-      const batch = writeBatch(db);
-      batch.set(doc(db, 'studentAttendancePublic', attIdKey), ledgerPayload);
-      batch.set(doc(db, 'studentAttendancePublic', attLegacyKey), ledgerPayload);
-      await batch.commit();
     } catch (err) {
       console.warn(`Attendance public sync skipped for ${stu.studentId}:`, err);
     }
@@ -3234,13 +3433,19 @@ export async function syncApprovedStudentsPublicAttendance(
       const mobLookupKey = await buildAttendanceMobileLookupKey(mobile);
       const mobRef = doc(db, 'attendanceLookupIndex', mobLookupKey);
       const mobSnap = await getDoc(mobRef).catch(() => null);
-      const nextEntries = entries.slice(0, 10);
-      const existingIds =
+      const nextEntries = capMobileBucketEntries(entries);
+      const existingSig =
         mobSnap?.exists() && Array.isArray(mobSnap.data().entries)
-          ? (mobSnap.data().entries as AttendanceLookupEntry[]).map((e) => `${e.studentId}:${e.batch}`).join(',')
+          ? (mobSnap.data().entries as AttendanceLookupEntry[])
+              .map((e) => `${e.studentId}:${e.studentName}:${e.batch}:${e.course}`)
+              .sort()
+              .join(',')
           : '';
-      const nextIds = nextEntries.map((e) => `${e.studentId}:${e.batch}`).join(',');
-      if (!mobSnap?.exists() || existingIds !== nextIds) {
+      const nextSig = nextEntries
+        .map((e) => `${e.studentId}:${e.studentName}:${e.batch}:${e.course}`)
+        .sort()
+        .join(',');
+      if (!mobSnap?.exists() || existingSig !== nextSig) {
         await setDoc(mobRef, {
           lookupType: 'mobile',
           entries: nextEntries,

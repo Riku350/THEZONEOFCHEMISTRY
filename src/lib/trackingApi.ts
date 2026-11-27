@@ -275,3 +275,291 @@ export function isFirebaseUnavailableError(err: unknown): boolean {
     msg.includes('quota')
   );
 }
+
+export interface AttendanceSearchStudentDto {
+  studentId: string;
+  studentName: string;
+  fatherName: string;
+  studentClass: string;
+  course: string;
+  batch: string;
+  maskedMobile: string;
+  photoUrl?: string;
+  photoDataUrl?: string;
+  enrolledDate?: string;
+  attendanceKeyHash: string;
+  reportToken?: string;
+}
+
+export interface AttendanceSearchHolidayDto {
+  id: string;
+  date: string;
+  title: string;
+  batchId: string;
+  dayType: 'Holiday' | 'NotScheduled';
+}
+
+export interface AttendanceSearchServerIst {
+  date: string;
+  time: string;
+  iso: string;
+  epochMs: number;
+  year: number;
+  month: number;
+  day: number;
+  weekday: number;
+  timezone: string;
+}
+
+export type AttendanceSearchApiResult =
+  | {
+      ok: true;
+      serverIst: AttendanceSearchServerIst;
+      year: number;
+      students: AttendanceSearchStudentDto[];
+      attendance: {
+        id: string;
+        studentId: string;
+        year: number;
+        batchId: string;
+        batchTiming: string;
+        enrolledDate?: string;
+        scheduledDays: number[];
+        records: Record<
+          string,
+          {
+            status: 'Present' | 'Absent';
+            entryTimeMs?: number | null;
+            exitTimeMs?: number | null;
+            batchTiming?: string;
+          }
+        >;
+      } | null;
+      hasAttendanceRecords: boolean;
+      holidays: AttendanceSearchHolidayDto[];
+    }
+  | {
+      ok: false;
+      code:
+        | 'INVALID_MOBILE'
+        | 'INVALID_STUDENT_ID'
+        | 'APPLICATION_NUMBER_NOT_STUDENT_ID'
+        | 'STUDENT_NOT_FOUND'
+        | 'RATE_LIMITED'
+        | 'SERVICE_UNAVAILABLE';
+      retryAfterSeconds?: number;
+      message: string;
+    };
+
+export async function searchStudentAttendanceApi(params: {
+  mode: 'mobile' | 'id';
+  query: string;
+  year?: number;
+}): Promise<AttendanceSearchApiResult> {
+  const maxAttempts = 2;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const { response, json, isJson } = await fetchJsonWithTimeout(
+        '/api/attendance/search',
+        {
+          method: 'POST',
+          body: JSON.stringify(params),
+        },
+        12000
+      );
+
+      if (response.ok && isJson && json && json.ok === true && Array.isArray(json.students)) {
+        return {
+          ok: true,
+          serverIst: json.serverIst as AttendanceSearchServerIst,
+          year: Number(json.year) || new Date().getFullYear(),
+          students: json.students as AttendanceSearchStudentDto[],
+          attendance: (json.attendance ?? null) as Extract<
+            AttendanceSearchApiResult,
+            { ok: true }
+          >['attendance'],
+          hasAttendanceRecords: Boolean(json.hasAttendanceRecords),
+          holidays: Array.isArray(json.holidays)
+            ? (json.holidays as AttendanceSearchHolidayDto[])
+            : [],
+        };
+      }
+
+      if (response.status === 404 && isJson && json) {
+        return {
+          ok: false,
+          code: 'STUDENT_NOT_FOUND',
+          message: typeof json.error === 'string' && json.error ? json.error : 'Student Not Found.',
+        };
+      }
+
+      if (response.status === 400 && isJson && json) {
+        const rawCode = typeof json.code === 'string' ? json.code : '';
+        const code =
+          rawCode === 'INVALID_MOBILE' ||
+          rawCode === 'INVALID_STUDENT_ID' ||
+          rawCode === 'APPLICATION_NUMBER_NOT_STUDENT_ID'
+            ? rawCode
+            : params.mode === 'mobile'
+            ? 'INVALID_MOBILE'
+            : 'INVALID_STUDENT_ID';
+        return {
+          ok: false,
+          code,
+          message:
+            typeof json.error === 'string' && json.error
+              ? json.error
+              : params.mode === 'mobile'
+              ? 'Invalid Mobile Number.'
+              : 'Invalid Student ID.',
+        };
+      }
+
+      if (response.status === 429 && isJson && json) {
+        const waitSec = Math.max(1, Number(json.retryAfterSeconds) || 30);
+        return {
+          ok: false,
+          code: 'RATE_LIMITED',
+          retryAfterSeconds: waitSec,
+          message:
+            typeof json.error === 'string' && json.error
+              ? json.error
+              : `Too many search attempts. Please wait ${waitSec} seconds before retrying.`,
+        };
+      }
+
+      const isTransient =
+        response.status === 502 ||
+        response.status === 503 ||
+        response.status === 504 ||
+        !isJson;
+      if (isTransient && attempt < maxAttempts) {
+        await delayMs(450);
+        continue;
+      }
+
+      return {
+        ok: false,
+        code: 'SERVICE_UNAVAILABLE',
+        message: 'Server Temporarily Unavailable. Please try again in a moment.',
+      };
+    } catch {
+      if (attempt < maxAttempts) {
+        await delayMs(450);
+        continue;
+      }
+      return {
+        ok: false,
+        code: 'SERVICE_UNAVAILABLE',
+        message: 'Server Temporarily Unavailable. Please check your internet connection and try again.',
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    code: 'SERVICE_UNAVAILABLE',
+    message: 'Server Temporarily Unavailable. Please try again in a moment.',
+  };
+}
+
+export type AttendanceReportApiResult =
+  | {
+      ok: true;
+      year: number;
+      attendance: Extract<AttendanceSearchApiResult, { ok: true }>['attendance'];
+      hasAttendanceRecords: boolean;
+    }
+  | {
+      ok: false;
+      code: 'INVALID_STUDENT_ID' | 'RATE_LIMITED' | 'SERVICE_UNAVAILABLE';
+      retryAfterSeconds?: number;
+      message: string;
+    };
+
+export async function fetchStudentAttendanceReportApi(params: {
+  studentId: string;
+  year: number;
+  reportToken?: string;
+}): Promise<AttendanceReportApiResult> {
+  const maxAttempts = 2;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const { response, json, isJson } = await fetchJsonWithTimeout(
+        '/api/attendance/report',
+        {
+          method: 'POST',
+          body: JSON.stringify(params),
+        },
+        12000
+      );
+
+      if (response.ok && isJson && json && json.ok === true) {
+        return {
+          ok: true,
+          year: Number(json.year) || params.year,
+          attendance: (json.attendance ?? null) as Extract<
+            AttendanceSearchApiResult,
+            { ok: true }
+          >['attendance'],
+          hasAttendanceRecords: Boolean(json.hasAttendanceRecords),
+        };
+      }
+
+      if (response.status === 429 && isJson && json) {
+        const waitSec = Math.max(1, Number(json.retryAfterSeconds) || 30);
+        return {
+          ok: false,
+          code: 'RATE_LIMITED',
+          retryAfterSeconds: waitSec,
+          message:
+            typeof json.error === 'string' && json.error
+              ? json.error
+              : `Too many requests. Please wait ${waitSec} seconds.`,
+        };
+      }
+
+      if (response.status === 400 && isJson && json) {
+        return {
+          ok: false,
+          code: 'INVALID_STUDENT_ID',
+          message: typeof json.error === 'string' && json.error ? json.error : 'Invalid Student ID.',
+        };
+      }
+
+      const isTransient =
+        response.status === 502 ||
+        response.status === 503 ||
+        response.status === 504 ||
+        !isJson;
+      if (isTransient && attempt < maxAttempts) {
+        await delayMs(450);
+        continue;
+      }
+
+      return {
+        ok: false,
+        code: 'SERVICE_UNAVAILABLE',
+        message: 'Server Temporarily Unavailable. Please try again in a moment.',
+      };
+    } catch {
+      if (attempt < maxAttempts) {
+        await delayMs(450);
+        continue;
+      }
+      return {
+        ok: false,
+        code: 'SERVICE_UNAVAILABLE',
+        message: 'Server Temporarily Unavailable. Please check your internet connection and retry.',
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    code: 'SERVICE_UNAVAILABLE',
+    message: 'Server Temporarily Unavailable. Please try again in a moment.',
+  };
+}

@@ -27,16 +27,16 @@ import {
   WEEKDAY_LABELS,
 } from '../lib/attendanceUtils';
 import {
-  cleanPhone,
-  fetchPublicAttendanceHolidays,
-  fetchStudentAttendanceById,
-  lookupActiveStudentsForAttendanceById,
-  lookupActiveStudentsForAttendanceByMobile,
+  normalizeIndianMobile,
+  normalizeStudentId,
 } from '../lib/firestoreService';
-import { checkSearchRateLimit, isFirebaseUnavailableError } from '../lib/trackingApi';
+import {
+  AttendanceSearchStudentDto,
+  fetchStudentAttendanceReportApi,
+  searchStudentAttendanceApi,
+} from '../lib/trackingApi';
 import {
   AttendanceHoliday,
-  AttendanceLookupEntry,
   BatchItem,
   CalendarDayStatus,
   InstituteSettings,
@@ -110,7 +110,7 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
   const [selectedYear, setSelectedYear] = useState(initialIst.year);
   const [selectedMonth, setSelectedMonth] = useState(initialIst.month);
 
-  // Direct Search State (Registered Mobile Number or Student ID — No Login Required)
+  // Direct Search State (Registered Mobile Number or Student ID — No OTP, No Login)
   const [mode, setMode] = useState<SearchMode>('mobile');
   const [queryInput, setQueryInput] = useState('');
   const [searching, setSearching] = useState(false);
@@ -119,11 +119,12 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
   const [rateLimitCountdown, setRateLimitCountdown] = useState(0);
 
   // Matched Active Approved Student(s)
-  const [matchedStudents, setMatchedStudents] = useState<AttendanceLookupEntry[]>([]);
-  const [activeStudent, setActiveStudent] = useState<AttendanceLookupEntry | null>(null);
+  const [matchedStudents, setMatchedStudents] = useState<AttendanceSearchStudentDto[]>([]);
+  const [activeStudent, setActiveStudent] = useState<AttendanceSearchStudentDto | null>(null);
 
   // Yearly Attendance Ledger & Calendar State
   const [attendanceDoc, setAttendanceDoc] = useState<StudentAttendancePublicDoc | null>(null);
+  const [loadedDocKey, setLoadedDocKey] = useState('');
   const [attendanceLoadError, setAttendanceLoadError] = useState('');
   const [attendanceReloadSeq, setAttendanceReloadSeq] = useState(0);
   const [holidays, setHolidays] = useState<AttendanceHoliday[]>([]);
@@ -136,11 +137,6 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
       setSelectedYear(t.year);
       setSelectedMonth(t.month);
     });
-    void fetchPublicAttendanceHolidays()
-      .then(setHolidays)
-      .catch(() => {
-        /* Holidays fall back gracefully without blocking attendance display */
-      });
   }, []);
 
   useEffect(() => {
@@ -151,33 +147,33 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
     return () => window.clearInterval(t);
   }, [rateLimitCountdown]);
 
-  // Fetch yearly attendance ledger immediately when an active student is selected or year changes
+  // Fetch yearly attendance ledger via rate-limited backend API when student or year changes
   useEffect(() => {
     if (!activeStudent?.studentId) return;
+    const reqKey = `${activeStudent.studentId}::${selectedYear}::${attendanceReloadSeq}`;
+    if (loadedDocKey === reqKey) return;
+
     let cancelled = false;
     setLoadingYearData(true);
     setAttendanceLoadError('');
     setSelectedDay(null);
 
-    void fetchStudentAttendanceById(
-      activeStudent.studentId,
-      selectedYear,
-      activeStudent._legacyMobile
-    )
-      .then((docData) => {
-        if (!cancelled) {
-          setAttendanceDoc(docData);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          console.error('Student attendance ledger load failed:', err);
+    void fetchStudentAttendanceReportApi({
+      studentId: activeStudent.studentId,
+      year: selectedYear,
+      reportToken: activeStudent.reportToken,
+    })
+      .then((res) => {
+        if (cancelled) return;
+        if (res.ok) {
+          setAttendanceDoc(res.attendance as StudentAttendancePublicDoc | null);
+          setLoadedDocKey(reqKey);
+        } else {
+          if (res.code === 'RATE_LIMITED' && res.retryAfterSeconds) {
+            setRateLimitCountdown(res.retryAfterSeconds);
+          }
           setAttendanceDoc(null);
-          setAttendanceLoadError(
-            isFirebaseUnavailableError(err)
-              ? 'Firebase attendance database is temporarily unreachable. Please check your internet connection and retry.'
-              : 'Unable to load attendance records right now. Please try again.'
-          );
+          setAttendanceLoadError(res.message);
         }
       })
       .finally(() => {
@@ -187,7 +183,13 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
     return () => {
       cancelled = true;
     };
-  }, [activeStudent?.studentId, activeStudent?._legacyMobile, selectedYear, attendanceReloadSeq]);
+  }, [
+    activeStudent?.studentId,
+    activeStudent?.reportToken,
+    selectedYear,
+    attendanceReloadSeq,
+    loadedDocKey,
+  ]);
 
   const resetAll = () => {
     setErrorMsg('');
@@ -195,6 +197,7 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
     setMatchedStudents([]);
     setActiveStudent(null);
     setAttendanceDoc(null);
+    setLoadedDocKey('');
     setAttendanceLoadError('');
     setSelectedDay(null);
   };
@@ -211,54 +214,55 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
     if (searching || rateLimitCountdown > 0) return;
 
     resetAll();
-    const trimmed = queryInput.trim();
+    const raw = queryInput.trim();
     if (mode === 'mobile') {
-      const cleaned = cleanPhone(trimmed);
-      if (!/^[0-9]{10}$/.test(cleaned)) {
-        setErrorMsg('Please enter a valid 10-digit Registered Mobile Number.');
+      const mobileCheck = normalizeIndianMobile(raw);
+      if (!mobileCheck.ok) {
+        setErrorMsg(mobileCheck.error);
         return;
       }
     } else {
-      if (trimmed.length < 4 || !/^[a-zA-Z0-9_\-]+$/.test(trimmed)) {
-        setErrorMsg('Please enter a valid Student ID Number (e.g., ZOC-2026-123456).');
+      const idCheck = normalizeStudentId(raw);
+      if (!idCheck.ok) {
+        setErrorMsg(idCheck.error);
         return;
       }
     }
 
     setSearching(true);
     try {
-      // 1. Fail-closed server-side rate-limit check to prevent abuse
-      const rl = await checkSearchRateLimit(mode, 'attendance');
-      if (!rl.ok) {
-        if (rl.reason === 'rate_limited') {
-          setRateLimitCountdown(rl.retryAfterSeconds);
+      const res = await searchStudentAttendanceApi({
+        mode,
+        query: raw,
+        year: selectedYear,
+      });
+
+      if (!res.ok) {
+        if (res.code === 'STUDENT_NOT_FOUND') {
+          setNotFound(true);
+          return;
         }
-        setErrorMsg(rl.message);
+        if (res.code === 'RATE_LIMITED' && res.retryAfterSeconds) {
+          setRateLimitCountdown(res.retryAfterSeconds);
+        }
+        setErrorMsg(res.message);
         return;
       }
 
-      // 2. Direct Firebase lookup of ONLY approved and active student records
-      const results =
-        mode === 'mobile'
-          ? await lookupActiveStudentsForAttendanceByMobile(trimmed)
-          : await lookupActiveStudentsForAttendanceById(trimmed);
-
-      if (!results || results.length === 0) {
-        setNotFound(true);
-        return;
+      if (res.serverIst?.date) {
+        setTodayIst(res.serverIst.date);
+      }
+      if (Array.isArray(res.holidays)) {
+        setHolidays(res.holidays as AttendanceHoliday[]);
       }
 
-      setMatchedStudents(results);
-      if (results.length === 1) {
-        setActiveStudent(results[0]);
+      setMatchedStudents(res.students);
+      if (res.students.length === 1) {
+        const single = res.students[0];
+        setActiveStudent(single);
+        setAttendanceDoc(res.attendance as StudentAttendancePublicDoc | null);
+        setLoadedDocKey(`${single.studentId}::${res.year}::${attendanceReloadSeq}`);
       }
-    } catch (err) {
-      console.error('Attendance lookup error:', err);
-      setErrorMsg(
-        isFirebaseUnavailableError(err)
-          ? 'Student attendance database is temporarily unavailable. Please check your internet connection and try again shortly.'
-          : 'Unable to complete attendance lookup right now. Please try again.'
-      );
     } finally {
       setSearching(false);
     }
@@ -359,6 +363,7 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
                 onClick={() => {
                   setActiveStudent(null);
                   setAttendanceDoc(null);
+                  setLoadedDocKey('');
                   setSelectedDay(null);
                 }}
                 className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-violet-50 hover:bg-violet-100 border border-violet-200 text-xs font-semibold text-violet-700 cursor-pointer"
@@ -415,19 +420,20 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
               )}
               <input
                 type={mode === 'mobile' ? 'tel' : 'text'}
-                inputMode={mode === 'mobile' ? 'numeric' : 'text'}
-                maxLength={mode === 'mobile' ? 10 : 40}
+                inputMode={mode === 'mobile' ? 'tel' : 'text'}
+                maxLength={mode === 'mobile' ? 20 : 48}
                 value={queryInput}
                 onChange={(e) => {
                   if (mode === 'mobile') {
-                    setQueryInput(e.target.value.replace(/[^0-9]/g, '').slice(0, 10));
+                    // Allow digits, +, spaces, dashes, and parentheses so +91 62994 75970 pastes cleanly
+                    setQueryInput(e.target.value.replace(/[^0-9+\-\s()]/g, '').slice(0, 20));
                   } else {
                     setQueryInput(e.target.value.toUpperCase());
                   }
                 }}
                 placeholder={
                   mode === 'mobile'
-                    ? 'Enter 10-digit Registered Mobile Number'
+                    ? 'Enter Registered Mobile Number (e.g., 6299475970 or +91 6299475970)'
                     : 'Enter Student ID (e.g., ZOC-2026-123456)'
                 }
                 className="w-full rounded-xl bg-gray-50 focus:bg-white border border-gray-200 focus:border-violet-500 pl-10 pr-4 py-3 text-sm font-mono text-gray-900 placeholder:font-sans placeholder-gray-400 focus:outline-none transition-colors"
@@ -456,9 +462,12 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
 
           {notFound && (
             <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 text-xs sm:text-sm text-amber-900">
-              {mode === 'mobile'
-                ? `No active approved student record found for this mobile number. Please check the 10-digit registered number or contact ${settings.instituteName}.`
-                : `No active approved student record found matching this Student ID. Please verify your Student ID or contact ${settings.instituteName}.`}
+              <p className="font-semibold">Student Not Found.</p>
+              <p className="mt-1 text-xs text-amber-800">
+                {mode === 'mobile'
+                  ? `No approved and active student record was found for this mobile number. Pending, rejected, or suspended admissions do not appear here. Please verify your number or contact ${settings.instituteName}.`
+                  : `No approved and active student record matches this Student ID. Pending, rejected, or suspended admissions do not appear here. Please check your Student ID or contact ${settings.instituteName}.`}
+              </p>
             </div>
           )}
 
@@ -473,7 +482,11 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
                   <button
                     key={entry.studentId}
                     type="button"
-                    onClick={() => setActiveStudent(entry)}
+                    onClick={() => {
+                      setActiveStudent(entry);
+                      setAttendanceDoc(null);
+                      setLoadedDocKey('');
+                    }}
                     className="text-left rounded-xl bg-white hover:border-violet-400 border border-gray-200 p-3 flex items-center justify-between gap-2 transition-colors cursor-pointer"
                   >
                     <div className="min-w-0">
@@ -602,7 +615,7 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
             <div className="app-card rounded-2xl p-6 text-center space-y-3 border-red-200 bg-red-50/40">
               <AlertCircle className="w-8 h-8 text-red-500 mx-auto" />
               <h4 className="font-display text-base font-bold text-gray-900">
-                Attendance Service Temporarily Unavailable
+                Server Temporarily Unavailable
               </h4>
               <p className="text-xs sm:text-sm text-red-700 max-w-md mx-auto">
                 {attendanceLoadError}
@@ -622,10 +635,12 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
                 {Object.keys(attendanceDoc?.records || {}).length === 0 && (
                   <div className="rounded-2xl bg-violet-50/60 border border-violet-200 px-4 py-3 text-xs sm:text-sm text-violet-900 flex items-start gap-2.5">
                     <Clock className="w-4 h-4 text-violet-600 shrink-0 mt-0.5" />
-                    <span>
-                      No QR attendance scans have been recorded for <strong>{selectedYear}</strong> yet.
-                      Your attendance totals and monthly calendar will update automatically as soon as your teacher scans your Student ID card.
-                    </span>
+                    <div>
+                      <p className="font-semibold">No Attendance Records Found.</p>
+                      <p className="text-xs text-violet-800 mt-0.5">
+                        No attendance scans have been recorded for <strong>{selectedYear}</strong> yet. Your attendance totals and monthly calendar will update automatically as soon as your teacher scans your Student ID card.
+                      </p>
+                    </div>
                   </div>
                 )}
 
