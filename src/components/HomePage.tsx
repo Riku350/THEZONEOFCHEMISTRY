@@ -26,6 +26,7 @@ import {
   PublicView,
 } from '../types';
 import { ResolvedImage } from './ResolvedImage';
+import { TrackMyAdmission } from './TrackMyAdmission';
 
 interface HomePageProps {
   settings: InstituteSettings;
@@ -169,6 +170,9 @@ export const HomePage: React.FC<HomePageProps> = ({
             </div>
           </section>
         )}
+
+        {/* 2B. TRACK MY ADMISSION (Zero-Login Student Self-Service) */}
+        <TrackMyAdmission settings={settings} compact />
 
         {/* 3. COURSES IN SMALL ROUNDED CARDS */}
         <section id="courses" className="space-y-4">

@@ -55,6 +55,18 @@ service cloud.firestore {
       return (val is int || val is float) && val >= 0 && val <= maxVal;
     }
 
+    function isValidDateString(val) {
+      return val is string && val.size() == 10 && val.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+
+    function isValidWeekdayList(listVal) {
+      return listVal is list
+        && listVal.size() >= 0
+        && listVal.size() <= 7
+        && (listVal.size() == 0 || (listVal[0] is int && listVal[0] >= 0 && listVal[0] <= 6))
+        && (listVal.size() == 0 || (listVal[listVal.size() - 1] is int && listVal[listVal.size() - 1] >= 0 && listVal[listVal.size() - 1] <= 6));
+    }
+
     // -------------------------------------------------------------------------
     // Entity Validation Blueprints (Anti-Update-Gap)
     // -------------------------------------------------------------------------
@@ -214,11 +226,16 @@ service cloud.firestore {
 
     function isValidBatch(data) {
       return data.keys().hasAll(['name', 'timing', 'active', 'order', 'updatedAt'])
-        && data.keys().hasOnly(['name', 'timing', 'capacity', 'feeOverride', 'active', 'order', 'updatedAt'])
+        && data.keys().hasOnly([
+          'name', 'timing', 'capacity', 'feeOverride', 'scheduledDays', 'scheduleStartDate',
+          'active', 'order', 'updatedAt'
+        ])
         && isValidString(data.name, 2, 80)
         && isValidString(data.timing, 2, 80)
         && (!('capacity' in data) || isNonNegNumber(data.capacity, 5000))
         && (!('feeOverride' in data) || data.feeOverride == null || isNonNegNumber(data.feeOverride, 500000))
+        && (!('scheduledDays' in data) || isValidWeekdayList(data.scheduledDays))
+        && (!('scheduleStartDate' in data) || data.scheduleStartDate == '' || isValidDateString(data.scheduleStartDate))
         && data.active is bool
         && isNonNegNumber(data.order, 1000)
         && data.updatedAt is timestamp;
@@ -320,7 +337,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'instituteName', 'teacherName', 'tagline', 'academicSession', 'defaultFee',
           'admissionsOpen', 'admissionHeadline', 'phone', 'whatsappNumber', 'email',
-          'address', 'signatureText', 'updatedAt'
+          'address', 'signatureText', 'attendanceExitTracking', 'updatedAt'
         ])
         && isValidString(data.instituteName, 2, 120)
         && isValidString(data.teacherName, 2, 120)
@@ -334,6 +351,7 @@ service cloud.firestore {
         && isOptionalString(data, 'email', 160)
         && isOptionalString(data, 'address', 300)
         && isOptionalString(data, 'signatureText', 80)
+        && (!('attendanceExitTracking' in data) || data.attendanceExitTracking is bool)
         && data.updatedAt is timestamp;
     }
 
@@ -344,6 +362,141 @@ service cloud.firestore {
         && isValidString(data.mimeType, 3, 60)
         && isOptionalString(data, 'fileName', 160)
         && data.createdAt is timestamp;
+    }
+
+    function isValidTrackingEntry(entry) {
+      return entry is map
+        && entry.keys().hasAll(['applicationNumber', 'course', 'admissionStage', 'hasStudentId'])
+        && entry.keys().hasOnly(['applicationNumber', 'course', 'admissionStage', 'hasStudentId'])
+        && isValidString(entry.applicationNumber, 4, 40)
+        && entry.applicationNumber.matches('^[a-zA-Z0-9_\\-]+$')
+        && isValidString(entry.course, 2, 100)
+        && (entry.admissionStage in ['Application Submitted', 'Under Review', 'Approved', 'Rejected', 'Student ID Generated'])
+        && entry.hasStudentId is bool;
+    }
+
+    function isValidTrackingIndex(data) {
+      return data.keys().hasAll(['lookupType', 'maskedMobile', 'mobileHash', 'entries', 'updatedAt'])
+        && data.keys().hasOnly(['lookupType', 'maskedMobile', 'mobileHash', 'entries', 'updatedAt'])
+        && (data.lookupType in ['id', 'mobile'])
+        && isValidString(data.maskedMobile, 4, 20)
+        && data.mobileHash is string && data.mobileHash.size() == 64 && data.mobileHash.matches('^[a-f0-9]{64}$')
+        && data.entries is list
+        && data.entries.size() >= 1
+        && data.entries.size() <= 10
+        && isValidTrackingEntry(data.entries[0])
+        && isValidTrackingEntry(data.entries[data.entries.size() - 1])
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStudentTrackingProfile(data) {
+      return data.keys().hasAll([
+          'applicationNumber', 'studentName', 'fatherName', 'studentClass', 'course', 'batch',
+          'academicSession', 'status', 'admissionStage', 'feeAmount', 'paidAmount', 'paymentStatus',
+          'submittedAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'applicationNumber', 'studentId', 'studentName', 'fatherName', 'studentClass', 'course', 'batch',
+          'academicSession', 'status', 'admissionStage', 'studentStatus', 'feeAmount', 'paidAmount',
+          'paymentStatus', 'securityCode', 'qrToken', 'photoUrl', 'photoDataUrl', 'remarks',
+          'submittedAt', 'updatedAt'
+        ])
+        && isValidString(data.applicationNumber, 4, 40) && data.applicationNumber.matches('^[a-zA-Z0-9_\\-]+$')
+        && isOptionalString(data, 'studentId', 64)
+        && isValidString(data.studentName, 2, 120)
+        && isValidString(data.fatherName, 2, 120)
+        && isValidString(data.studentClass, 2, 40)
+        && isValidString(data.course, 2, 100)
+        && isValidString(data.batch, 2, 80)
+        && isValidString(data.academicSession, 4, 40)
+        && (data.status in ['pending', 'approved', 'rejected'])
+        && (data.admissionStage in ['Application Submitted', 'Under Review', 'Approved', 'Rejected', 'Student ID Generated'])
+        && (!('studentStatus' in data) || (data.studentStatus in ['', 'active', 'suspended']))
+        && isNonNegNumber(data.feeAmount, 500000)
+        && isNonNegNumber(data.paidAmount, 500000)
+        && (data.paymentStatus in ['PENDING', 'PARTIAL', 'PAID'])
+        && isOptionalString(data, 'securityCode', 4)
+        && isOptionalString(data, 'qrToken', 120)
+        && isOptionalString(data, 'photoUrl', 2000)
+        && isOptionalString(data, 'photoDataUrl', 250000)
+        && isOptionalString(data, 'remarks', 500)
+        && data.submittedAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAttendanceRecord(data) {
+      return data.keys().hasAll([
+          'attendanceId', 'studentId', 'studentName', 'batchId', 'class', 'course',
+          'attendanceDate', 'attendanceStatus', 'source', 'recordedBy', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'attendanceId', 'studentId', 'studentName', 'batchId', 'batchTiming', 'class', 'course',
+          'attendanceDate', 'entryTime', 'exitTime', 'attendanceStatus', 'source',
+          'recordedBy', 'lastModifiedBy', 'correctionReason', 'createdAt', 'updatedAt'
+        ])
+        && isValidString(data.attendanceId, 8, 128) && data.attendanceId.matches('^[a-zA-Z0-9_\\-]+$')
+        && isValidString(data.studentId, 4, 64) && data.studentId.matches('^[a-zA-Z0-9_\\-]+$')
+        && isValidString(data.studentName, 2, 120)
+        && isValidString(data.batchId, 1, 100)
+        && isOptionalString(data, 'batchTiming', 80)
+        && isValidString(data.class, 2, 40)
+        && isValidString(data.course, 2, 100)
+        && isValidDateString(data.attendanceDate)
+        && (!('entryTime' in data) || data.entryTime == null || data.entryTime is timestamp)
+        && (!('exitTime' in data) || data.exitTime == null || data.exitTime is timestamp)
+        && (data.attendanceStatus in ['Present', 'Absent'])
+        && (data.source in ['qr', 'manual'])
+        && isValidString(data.recordedBy, 2, 200)
+        && isOptionalString(data, 'lastModifiedBy', 200)
+        && isOptionalString(data, 'correctionReason', 400)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAttendanceAuditLog(data) {
+      return data.keys().hasAll([
+          'logId', 'attendanceId', 'studentId', 'studentName', 'batchId',
+          'attendanceDate', 'previousStatus', 'newStatus', 'reason', 'modifiedBy', 'modifiedAt'
+        ])
+        && data.keys().hasOnly([
+          'logId', 'attendanceId', 'studentId', 'studentName', 'batchId',
+          'attendanceDate', 'previousStatus', 'newStatus', 'reason', 'modifiedBy', 'modifiedAt'
+        ])
+        && isValidString(data.logId, 4, 128) && data.logId.matches('^[a-zA-Z0-9_\\-]+$')
+        && isValidString(data.attendanceId, 4, 128)
+        && isValidString(data.studentId, 4, 64)
+        && isValidString(data.studentName, 2, 120)
+        && isValidString(data.batchId, 1, 100)
+        && isValidDateString(data.attendanceDate)
+        && (data.previousStatus in ['Present', 'Absent', 'None'])
+        && (data.newStatus in ['Present', 'Absent'])
+        && isValidString(data.reason, 3, 400)
+        && isValidString(data.modifiedBy, 2, 200)
+        && data.modifiedAt is timestamp;
+    }
+
+    function isValidAttendanceHoliday(data) {
+      return data.keys().hasAll(['date', 'title', 'batchId', 'dayType', 'createdBy', 'createdAt'])
+        && data.keys().hasOnly(['date', 'title', 'batchId', 'dayType', 'createdBy', 'createdAt'])
+        && isValidDateString(data.date)
+        && isValidString(data.title, 2, 120)
+        && isValidString(data.batchId, 1, 100)
+        && (data.dayType in ['Holiday', 'NotScheduled'])
+        && isValidString(data.createdBy, 2, 200)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidStudentAttendancePublic(data) {
+      return data.keys().hasAll(['studentId', 'year', 'batchId', 'batchTiming', 'scheduledDays', 'records', 'updatedAt'])
+        && data.keys().hasOnly(['studentId', 'year', 'batchId', 'batchTiming', 'enrolledDate', 'scheduledDays', 'records', 'updatedAt'])
+        && isValidString(data.studentId, 4, 64) && data.studentId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.year is int && data.year >= 2020 && data.year <= 2100
+        && isValidString(data.batchId, 1, 100)
+        && isValidString(data.batchTiming, 1, 80)
+        && (!('enrolledDate' in data) || data.enrolledDate == '' || isValidDateString(data.enrolledDate))
+        && isValidWeekdayList(data.scheduledDays)
+        && data.records is map && data.records.size() <= 366
+        && data.updatedAt is timestamp;
     }
 
     // -------------------------------------------------------------------------
@@ -522,6 +675,154 @@ service cloud.firestore {
       allow create: if isValidId(mediaId) && isValidMediaBlob(incoming()) && incoming().createdAt == request.time && isAdmin();
       allow update: if false;
       allow delete: if isValidId(mediaId) && isAdmin();
+    }
+
+    match /trackingIndex/{lookupHash} {
+      allow get: if isValidId(lookupHash);
+      allow list: if isAdmin();
+      allow create: if isValidId(lookupHash)
+        && isValidTrackingIndex(incoming())
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            incoming().entries.size() == 1
+            && incoming().entries[0].hasStudentId == false
+            && incoming().entries[0].admissionStage == 'Application Submitted'
+            && existsAfter(/databases/$(database)/documents/applications/$(incoming().entries[0].applicationNumber))
+          )
+        );
+      allow update: if isValidId(lookupHash)
+        && isValidTrackingIndex(incoming())
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            incoming().lookupType == 'mobile'
+            && incoming().lookupType == existing().lookupType
+            && incoming().mobileHash == existing().mobileHash
+            && incoming().maskedMobile == existing().maskedMobile
+            && incoming().diff(existing()).affectedKeys().hasOnly(['entries', 'updatedAt'])
+            && incoming().entries.size() == existing().entries.size() + 1
+            && incoming().entries.size() <= 10
+            && incoming().entries[incoming().entries.size() - 1].hasStudentId == false
+            && incoming().entries[incoming().entries.size() - 1].admissionStage == 'Application Submitted'
+            && existsAfter(/databases/$(database)/documents/applications/$(incoming().entries[incoming().entries.size() - 1].applicationNumber))
+          )
+        );
+      allow delete: if isValidId(lookupHash) && isAdmin();
+    }
+
+    match /studentTrackingProfiles/{profileKey} {
+      allow get: if isValidId(profileKey);
+      allow list: if isAdmin();
+      allow create: if isValidId(profileKey)
+        && isValidStudentTrackingProfile(incoming())
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            incoming().status == 'pending'
+            && incoming().admissionStage == 'Application Submitted'
+            && incoming().paymentStatus == 'PENDING'
+            && incoming().paidAmount == 0
+            && (!('studentId' in incoming()) || incoming().studentId == '')
+            && (!('securityCode' in incoming()) || incoming().securityCode == '')
+            && (!('qrToken' in incoming()) || incoming().qrToken == '')
+            && incoming().submittedAt == request.time
+            && existsAfter(/databases/$(database)/documents/applications/$(incoming().applicationNumber))
+          )
+        );
+      allow update: if isValidId(profileKey)
+        && isValidStudentTrackingProfile(incoming())
+        && incoming().submittedAt == existing().submittedAt
+        && incoming().applicationNumber == existing().applicationNumber
+        && incoming().updatedAt == request.time
+        && isAdmin();
+      allow delete: if isValidId(profileKey) && isAdmin();
+    }
+
+    match /attendance/{attendanceId} {
+      allow get: if isValidId(attendanceId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(attendanceId)
+        && isValidAttendanceRecord(incoming())
+        && incoming().attendanceId == attendanceId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/students/$(incoming().studentId))
+        && (
+          incoming().source == 'manual'
+          || (
+            incoming().source == 'qr'
+            && incoming().attendanceStatus == 'Present'
+            && ('entryTime' in incoming())
+            && incoming().entryTime == request.time
+            && get(/databases/$(database)/documents/students/$(incoming().studentId)).data.status == 'active'
+          )
+        )
+        && isAdmin();
+      allow update: if isValidId(attendanceId)
+        && isValidAttendanceRecord(incoming())
+        && incoming().attendanceId == existing().attendanceId
+        && incoming().studentId == existing().studentId
+        && incoming().batchId == existing().batchId
+        && incoming().attendanceDate == existing().attendanceDate
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().source == 'manual'
+          || (
+            incoming().source == 'qr'
+            && incoming().attendanceStatus == 'Present'
+            && ('exitTime' in incoming())
+            && incoming().exitTime == request.time
+            && (!('exitTime' in existing()) || existing().exitTime == null)
+          )
+        )
+        && isAdmin();
+      allow delete: if isValidId(attendanceId) && isAdmin();
+    }
+
+    match /attendanceAuditLogs/{logId} {
+      allow get: if isValidId(logId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(logId)
+        && isValidAttendanceAuditLog(incoming())
+        && incoming().logId == logId
+        && incoming().modifiedAt == request.time
+        && isAdmin();
+      allow update, delete: if false;
+    }
+
+    match /attendanceHolidays/{holidayId} {
+      allow get: if isValidId(holidayId);
+      allow list: if true;
+      allow create: if isValidId(holidayId)
+        && isValidAttendanceHoliday(incoming())
+        && incoming().createdAt == request.time
+        && isAdmin();
+      allow update: if isValidId(holidayId)
+        && isValidAttendanceHoliday(incoming())
+        && incoming().createdAt == existing().createdAt
+        && isAdmin();
+      allow delete: if isValidId(holidayId) && isAdmin();
+    }
+
+    match /studentAttendancePublic/{attendanceKey} {
+      allow get: if isValidId(attendanceKey);
+      allow list: if isAdmin();
+      allow create: if isValidId(attendanceKey)
+        && isValidStudentAttendancePublic(incoming())
+        && incoming().updatedAt == request.time
+        && isAdmin();
+      allow update: if isValidId(attendanceKey)
+        && isValidStudentAttendancePublic(incoming())
+        && incoming().studentId == existing().studentId
+        && incoming().year == existing().year
+        && incoming().updatedAt == request.time
+        && isAdmin();
+      allow delete: if isValidId(attendanceKey) && isAdmin();
     }
   }
 }

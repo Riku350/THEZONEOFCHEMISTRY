@@ -7,11 +7,63 @@ export type StudentStatus = 'active' | 'suspended';
 export type PaymentMethod = 'Cash' | 'UPI' | 'Bank Transfer' | 'Card' | 'Cheque';
 export type NoticeCategory = 'Admission' | 'Exam' | 'Schedule' | 'General';
 export type ScanStatusResult = 'VALID' | 'PENDING' | 'INVALID';
+export type AdmissionStage =
+  | 'Application Submitted'
+  | 'Under Review'
+  | 'Approved'
+  | 'Rejected'
+  | 'Student ID Generated';
+export type AttendanceStatus = 'Present' | 'Absent';
+export type AttendanceSource = 'qr' | 'manual';
+export type HolidayDayType = 'Holiday' | 'NotScheduled';
+export type CalendarDayStatus = 'Present' | 'Absent' | 'Holiday' | 'NotScheduled' | 'Upcoming';
+
 
 export interface TimestampLike {
   toDate?: () => Date;
   seconds?: number;
   nanoseconds?: number;
+}
+
+export interface TrackingIndexEntry {
+  applicationNumber: string;
+  course: string;
+  admissionStage: AdmissionStage;
+  hasStudentId: boolean;
+}
+
+export interface TrackingIndexDoc {
+  id: string;
+  lookupType: 'id' | 'mobile';
+  maskedMobile: string;
+  mobileHash: string;
+  entries: TrackingIndexEntry[];
+  updatedAt: TimestampLike | null;
+}
+
+export interface StudentTrackingProfile {
+  id: string;
+  applicationNumber: string;
+  studentId?: string;
+  studentName: string;
+  fatherName: string;
+  studentClass: string;
+  course: string;
+  batch: string;
+  academicSession: string;
+  status: ApplicationStatus;
+  admissionStage: AdmissionStage;
+  studentStatus?: '' | StudentStatus;
+  feeAmount: number;
+  paidAmount: number;
+  paymentStatus: PaymentStatus;
+  securityCode?: string;
+  qrToken?: string;
+  photoUrl?: string;
+  photoDataUrl?: string;
+  remarks?: string;
+  submittedAt: TimestampLike | null;
+  updatedAt: TimestampLike | null;
 }
 
 export interface AdmissionApplication {
@@ -119,6 +171,8 @@ export interface BatchItem {
   timing: string;
   capacity?: number;
   feeOverride?: number | null;
+  scheduledDays?: number[]; // 0=Sun..6=Sat
+  scheduleStartDate?: string; // YYYY-MM-DD
   active: boolean;
   order: number;
   updatedAt?: TimestampLike | null;
@@ -222,6 +276,7 @@ export interface InstituteSettings {
   email: string;
   address: string;
   signatureText: string;
+  attendanceExitTracking?: boolean;
   updatedAt?: TimestampLike | null;
 }
 
@@ -234,15 +289,82 @@ export interface AdminUserRecord {
   createdAt?: TimestampLike | null;
 }
 
-export type PublicView = 'home' | 'apply' | 'track' | 'admin';
+export interface AttendanceRecord {
+  id: string;
+  attendanceId: string;
+  studentId: string;
+  studentName: string;
+  batchId: string;
+  batchTiming?: string;
+  class: string;
+  course: string;
+  attendanceDate: string; // YYYY-MM-DD in Asia/Kolkata
+  entryTime?: TimestampLike | null;
+  exitTime?: TimestampLike | null;
+  attendanceStatus: AttendanceStatus;
+  source: AttendanceSource;
+  recordedBy: string;
+  lastModifiedBy?: string;
+  correctionReason?: string;
+  createdAt: TimestampLike | null;
+  updatedAt: TimestampLike | null;
+}
+
+export interface AttendanceAuditLog {
+  id: string;
+  logId: string;
+  attendanceId: string;
+  studentId: string;
+  studentName: string;
+  batchId: string;
+  attendanceDate: string;
+  previousStatus: AttendanceStatus | 'None';
+  newStatus: AttendanceStatus;
+  reason: string;
+  modifiedBy: string;
+  modifiedAt: TimestampLike | null;
+}
+
+export interface AttendanceHoliday {
+  id: string;
+  date: string; // YYYY-MM-DD
+  title: string;
+  batchId: string; // 'ALL' or specific batchId
+  dayType: HolidayDayType;
+  createdBy: string;
+  createdAt: TimestampLike | null;
+}
+
+export interface StudentAttendanceDayEntry {
+  status: AttendanceStatus;
+  entryTimeMs?: number | null;
+  exitTimeMs?: number | null;
+  batchTiming?: string;
+}
+
+export interface StudentAttendancePublicDoc {
+  id: string;
+  studentId: string;
+  year: number;
+  batchId: string;
+  batchTiming: string;
+  enrolledDate?: string;
+  scheduledDays: number[];
+  records: Record<string, StudentAttendanceDayEntry>;
+  updatedAt: TimestampLike | null;
+}
+
+export type PublicView = 'home' | 'apply' | 'track' | 'attendance' | 'admin';
 
 export type AdminTab =
   | 'overview'
   | 'applications'
   | 'students'
+  | 'attendance'
   | 'scanner'
   | 'fees'
   | 'banners'
   | 'gallery'
   | 'notices'
   | 'settings';
+

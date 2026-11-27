@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { signOut, User } from 'firebase/auth';
 import {
   AlertCircle,
@@ -35,9 +35,11 @@ import {
   approveApplicationAndCreateStudent,
   deleteApplicationRecord,
   initializeDefaultCatalogInFirestore,
+  markApplicationUnderReview,
   regenerateStudentSecurityCode,
   rejectApplication,
   subscribeAdminCollections,
+  syncMissingTrackingRecords,
   toggleStudentStatus,
   updateApplicationDetails,
   updateStudentProfile,
@@ -162,11 +164,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     };
   }, [onPublicDataChanged]);
 
+  const trackingBackfilledRef = useRef(false);
+
+  useEffect(() => {
+    if (trackingBackfilledRef.current) return;
+    if (applications.length === 0) return;
+    trackingBackfilledRef.current = true;
+    void syncMissingTrackingRecords(applications, students, settings.academicSession);
+  }, [applications, students, settings.academicSession]);
+
   useEffect(() => {
     if (!selectedApp) return;
     const latest = applications.find((a) => a.id === selectedApp.id);
     if (latest) setSelectedApp(latest);
   }, [applications, selectedApp]);
+
+  const handleOpenApplicationProfile = (app: AdmissionApplication) => {
+    setSelectedApp(app);
+    setEditingApp(false);
+    setShowRejectBox(false);
+    if (app.status === 'pending') {
+      void markApplicationUnderReview(app, settings.academicSession);
+    }
+  };
 
   // 8 Real Live KPIs (Zero Fake Statistics)
   const kpis = useMemo(() => {
@@ -706,11 +726,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               <td className="py-2.5 text-right">
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    setSelectedApp(app);
-                                    setEditingApp(false);
-                                    setShowRejectBox(false);
-                                  }}
+                                  onClick={() => handleOpenApplicationProfile(app)}
                                   className="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold cursor-pointer"
                                 >
                                   Review
@@ -862,11 +878,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             <td className="py-3 text-right whitespace-nowrap space-x-1.5">
                               <button
                                 type="button"
-                                onClick={() => {
-                                  setSelectedApp(app);
-                                  setEditingApp(false);
-                                  setShowRejectBox(false);
-                                }}
+                                onClick={() => handleOpenApplicationProfile(app)}
                                 className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-violet-50 hover:bg-violet-100 border border-violet-200 text-violet-700 text-xs font-semibold cursor-pointer"
                               >
                                 <Eye className="w-3.5 h-3.5" />

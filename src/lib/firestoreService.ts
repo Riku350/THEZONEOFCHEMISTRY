@@ -24,13 +24,20 @@ import {
 import {
   AdminUserRecord,
   AdmissionApplication,
+  AdmissionStage,
+  ApplicationStatus,
   ApplicationStatusLookup,
+  AttendanceAuditLog,
+  AttendanceHoliday,
+  AttendanceRecord,
+  AttendanceStatus,
   BannerItem,
   BatchItem,
   CourseItem,
   FeeRule,
   GalleryItem,
   Gender,
+  HolidayDayType,
   InstituteSettings,
   NoticeCategory,
   NoticeItem,
@@ -39,12 +46,79 @@ import {
   PaymentStatus,
   ScanHistoryEntry,
   ScanStatusResult,
+  StudentAttendanceDayEntry,
+  StudentAttendancePublicDoc,
   StudentClass,
   StudentRecord,
   StudentStream,
+  StudentTrackingProfile,
+  TrackingIndexDoc,
+  TrackingIndexEntry,
 } from '../types';
+import {
+  buildAttendanceDocId,
+  DEFAULT_SCHEDULED_DAYS,
+  fetchServerIstTime,
+  formatIstDateYmd,
+  formatIstTime,
+  resolveStudentBatch,
+  toEpochMs,
+} from './attendanceUtils';
 import { db, handleFirestoreError, OperationType, OWNER_ADMIN_EMAIL } from './firebase';
-import { uploadMediaSmart } from './media';
+import {
+  compressPassportThumbnail,
+  resolveMediaSource,
+  shrinkImageDataUrlForProfile,
+  uploadMediaSmart,
+} from './media';
+
+// -----------------------------------------------------------------------------
+// Cryptographic Tracking Helpers (Zero-PII Index + Unguessable Profile Keys)
+// -----------------------------------------------------------------------------
+export async function sha256Hex(input: string): Promise<string> {
+  const bytes = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export function maskMobileNumber(rawMobile: string): string {
+  const cleaned = cleanPhone(rawMobile);
+  if (cleaned.length < 4) return '******';
+  return `******${cleaned.slice(-4)}`;
+}
+
+export async function buildMobileLookupId(rawMobile: string): Promise<string> {
+  const hash = await sha256Hex(cleanPhone(rawMobile));
+  return `mob_${hash}`;
+}
+
+export async function buildCodeLookupId(rawCode: string): Promise<string> {
+  const normalized = sanitizeId(rawCode.trim().toUpperCase());
+  const hash = await sha256Hex(normalized);
+  return `id_${hash}`;
+}
+
+export async function buildProfileKey(applicationNumber: string, rawMobile: string): Promise<string> {
+  const normApp = sanitizeId(applicationNumber.trim().toUpperCase());
+  const cleaned = cleanPhone(rawMobile);
+  const hash = await sha256Hex(`${normApp}:${cleaned}`);
+  return `prof_${hash}`;
+}
+
+export function deriveAdmissionStage(
+  status: ApplicationStatus,
+  studentId?: string,
+  currentStage?: AdmissionStage
+): AdmissionStage {
+  if (status === 'rejected') return 'Rejected';
+  if (status === 'approved') {
+    return studentId && studentId.trim().length > 0 ? 'Student ID Generated' : 'Approved';
+  }
+  if (currentStage === 'Under Review') return 'Under Review';
+  return 'Application Submitted';
+}
 
 export function sanitizeId(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9_\-]/g, '-').slice(0, 120);
@@ -255,6 +329,7 @@ export interface AdmissionSubmissionInput {
   batch: string;
   feeAmount: number;
   declarationAccepted: boolean;
+  academicSession?: string;
   photoFile: File;
   idProofFile: File;
   marksheetFile?: File | null;
@@ -267,23 +342,32 @@ export async function submitAdmissionApplication(
   const cleanedMobile = cleanPhone(input.studentMobile);
   const trackingKey = sanitizeId(`${applicationNumber}_${cleanedMobile}`);
 
-  // Upload private documents first
-  const photoUpload = await uploadMediaSmart(input.photoFile, 'student_photos', true, 480);
-  const idProofUpload = await uploadMediaSmart(input.idProofFile, 'student_id_proofs', true, 960);
+  // Upload private documents first + generate compact passport thumbnail for verified tracking profile
+  const [photoUpload, idProofUpload, photoDataUrl] = await Promise.all([
+    uploadMediaSmart(input.photoFile, 'student_photos', true, 480),
+    uploadMediaSmart(input.idProofFile, 'student_id_proofs', true, 960),
+    compressPassportThumbnail(input.photoFile),
+  ]);
   let marksheetUpload = { url: '', mediaId: '' };
   if (input.marksheetFile) {
     marksheetUpload = await uploadMediaSmart(input.marksheetFile, 'student_marksheets', true, 960);
   }
 
   const nowTs = serverTimestamp();
+  const trimmedName = input.studentName.trim().slice(0, 120);
+  const trimmedFather = input.fatherName.trim().slice(0, 120);
+  const trimmedCourse = input.course.trim().slice(0, 100);
+  const trimmedBatch = input.batch.trim().slice(0, 80);
+  const roundedFee = Math.max(0, Math.round(input.feeAmount));
+  const sessionLabel = (input.academicSession || '2026–2027').trim().slice(0, 40);
 
   const appDoc: Record<string, unknown> = {
     applicationNumber,
     trackingKey,
-    studentName: input.studentName.trim().slice(0, 120),
+    studentName: trimmedName,
     studentMobile: cleanedMobile,
     studentWhatsapp: cleanPhone(input.studentWhatsapp || input.studentMobile),
-    fatherName: input.fatherName.trim().slice(0, 120),
+    fatherName: trimmedFather,
     fatherMobile: cleanPhone(input.fatherMobile),
     motherName: input.motherName.trim().slice(0, 120),
     motherMobile: cleanPhone(input.motherMobile),
@@ -297,15 +381,15 @@ export async function submitAdmissionApplication(
     pinCode: input.pinCode.replace(/[^0-9]/g, '').slice(0, 6),
     studentClass: input.studentClass,
     stream: input.stream,
-    course: input.course.trim().slice(0, 100),
-    batch: input.batch.trim().slice(0, 80),
+    course: trimmedCourse,
+    batch: trimmedBatch,
     photoUrl: photoUpload.url,
     photoMediaId: photoUpload.mediaId,
     idProofUrl: idProofUpload.url,
     idProofMediaId: idProofUpload.mediaId,
     marksheetUrl: marksheetUpload.url,
     marksheetMediaId: marksheetUpload.mediaId,
-    feeAmount: Math.max(0, Math.round(input.feeAmount)),
+    feeAmount: roundedFee,
     paidAmount: 0,
     paymentStatus: 'PENDING',
     status: 'pending',
@@ -318,13 +402,13 @@ export async function submitAdmissionApplication(
 
   const statusDoc: Record<string, unknown> = {
     applicationNumber,
-    studentName: input.studentName.trim().slice(0, 120),
-    course: input.course.trim().slice(0, 100),
-    batch: input.batch.trim().slice(0, 80),
+    studentName: trimmedName,
+    course: trimmedCourse,
+    batch: trimmedBatch,
     studentClass: input.studentClass,
     status: 'pending',
     paymentStatus: 'PENDING',
-    feeAmount: Math.max(0, Math.round(input.feeAmount)),
+    feeAmount: roundedFee,
     paidAmount: 0,
     studentId: '',
     remarks: 'Submitted successfully. Waiting for admin review.',
@@ -332,10 +416,82 @@ export async function submitAdmissionApplication(
     updatedAt: nowTs,
   };
 
+  // Cryptographic lookup IDs for zero-PII tracking index & OTP-gated profile
+  const [mobileHash, mobLookupId, appLookupId, profileKey] = await Promise.all([
+    sha256Hex(cleanedMobile),
+    buildMobileLookupId(cleanedMobile),
+    buildCodeLookupId(applicationNumber),
+    buildProfileKey(applicationNumber, cleanedMobile),
+  ]);
+  const maskedMobile = maskMobileNumber(cleanedMobile);
+  const newIndexEntry: TrackingIndexEntry = {
+    applicationNumber,
+    course: trimmedCourse,
+    admissionStage: 'Application Submitted',
+    hasStudentId: false,
+  };
+
+  const trackingProfileDoc: Record<string, unknown> = {
+    applicationNumber,
+    studentId: '',
+    studentName: trimmedName,
+    fatherName: trimmedFather,
+    studentClass: input.studentClass,
+    course: trimmedCourse,
+    batch: trimmedBatch,
+    academicSession: sessionLabel,
+    status: 'pending',
+    admissionStage: 'Application Submitted',
+    studentStatus: '',
+    feeAmount: roundedFee,
+    paidAmount: 0,
+    paymentStatus: 'PENDING',
+    securityCode: '',
+    qrToken: '',
+    photoUrl: photoUpload.url,
+    photoDataUrl,
+    remarks: 'Submitted successfully. Waiting for admin review.',
+    submittedAt: nowTs,
+    updatedAt: nowTs,
+  };
+
+  // Check if mobile tracking index already exists (multiple applications on same mobile)
+  const mobRef = doc(db, 'trackingIndex', mobLookupId);
+  const existingMobSnap = await getDoc(mobRef).catch(() => null);
+
   try {
     const batch = writeBatch(db);
     batch.set(doc(db, 'applications', applicationNumber), appDoc);
     batch.set(doc(db, 'applicationStatus', trackingKey), statusDoc);
+    batch.set(doc(db, 'studentTrackingProfiles', profileKey), trackingProfileDoc);
+    batch.set(doc(db, 'trackingIndex', appLookupId), {
+      lookupType: 'id',
+      maskedMobile,
+      mobileHash,
+      entries: [newIndexEntry],
+      updatedAt: nowTs,
+    });
+
+    if (existingMobSnap && existingMobSnap.exists()) {
+      const prevEntries = Array.isArray(existingMobSnap.data().entries)
+        ? (existingMobSnap.data().entries as TrackingIndexEntry[])
+        : [];
+      if (prevEntries.length < 10) {
+        batch.update(mobRef, {
+          entries: [...prevEntries, newIndexEntry],
+          updatedAt: nowTs,
+        });
+      }
+    } else {
+      batch.set(mobRef, {
+        lookupType: 'mobile',
+        maskedMobile,
+        mobileHash,
+        entries: [newIndexEntry],
+        updatedAt: nowTs,
+      });
+    }
+
     await batch.commit();
     return { applicationNumber, trackingKey };
   } catch (error) {
@@ -358,6 +514,327 @@ export async function trackApplicationStatus(
     return { id: snap.id, ...snap.data() } as ApplicationStatusLookup;
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, `applicationStatus/${trackingKey}`);
+  }
+}
+
+/**
+ * Public zero-PII lookup by Student ID or Application Number.
+ * Returns only non-sensitive metadata + masked mobile hash for OTP verification.
+ */
+export async function lookupTrackingIndexById(rawId: string): Promise<TrackingIndexDoc | null> {
+  const normalized = sanitizeId(rawId.trim().toUpperCase());
+  if (normalized.length < 4) return null;
+  const lookupId = await buildCodeLookupId(normalized);
+  try {
+    const snap = await getDoc(doc(db, 'trackingIndex', lookupId));
+    if (!snap.exists()) return null;
+    return { id: snap.id, ...snap.data() } as TrackingIndexDoc;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `trackingIndex/${lookupId}`);
+  }
+}
+
+/**
+ * Public zero-PII lookup by Registered 10-Digit Mobile Number.
+ * If multiple applications share this mobile, returns ONLY applicationNumber, course, and stage.
+ */
+export async function lookupTrackingIndexByMobile(rawMobile: string): Promise<TrackingIndexDoc | null> {
+  const cleaned = cleanPhone(rawMobile);
+  if (cleaned.length !== 10) return null;
+  const lookupId = await buildMobileLookupId(cleaned);
+  try {
+    const snap = await getDoc(doc(db, 'trackingIndex', lookupId));
+    if (!snap.exists()) return null;
+    return { id: snap.id, ...snap.data() } as TrackingIndexDoc;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `trackingIndex/${lookupId}`);
+  }
+}
+
+/**
+ * Fetches the official StudentTrackingProfile strictly AFTER OTP verification
+ * using the unguessable SHA-256 profile key derived from applicationNumber + verifiedMobile.
+ */
+export async function fetchVerifiedTrackingProfile(
+  applicationNumber: string,
+  verifiedMobile: string
+): Promise<StudentTrackingProfile | null> {
+  const normApp = sanitizeId(applicationNumber.trim().toUpperCase());
+  const cleaned = cleanPhone(verifiedMobile);
+  if (!normApp || cleaned.length !== 10) return null;
+  const profileKey = await buildProfileKey(normApp, cleaned);
+  try {
+    const snap = await getDoc(doc(db, 'studentTrackingProfiles', profileKey));
+    if (!snap.exists()) return null;
+    return { id: snap.id, ...snap.data() } as StudentTrackingProfile;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `studentTrackingProfiles/${profileKey}`);
+  }
+}
+
+interface AdminTrackingSyncPayload {
+  applicationNumber: string;
+  studentId?: string;
+  studentMobile: string;
+  previousMobile?: string;
+  studentName: string;
+  fatherName: string;
+  studentClass: string;
+  course: string;
+  batch: string;
+  academicSession: string;
+  status: ApplicationStatus;
+  admissionStage: AdmissionStage;
+  studentStatus?: '' | 'active' | 'suspended';
+  feeAmount: number;
+  paidAmount: number;
+  paymentStatus: PaymentStatus;
+  securityCode?: string;
+  qrToken?: string;
+  photoUrl?: string;
+  photoMediaId?: string;
+  remarks?: string;
+  submittedAt?: unknown;
+}
+
+/**
+ * Admin-only synchronizer that updates /studentTrackingProfiles and /trackingIndex
+ * across mobile, application number, and student ID lookup keys.
+ */
+async function syncAdminTrackingRecords(payload: AdminTrackingSyncPayload): Promise<void> {
+  const cleanedMobile = cleanPhone(payload.studentMobile);
+  if (cleanedMobile.length !== 10) return;
+
+  const appNo = sanitizeId(payload.applicationNumber);
+  const studentId = payload.studentId ? sanitizeId(payload.studentId) : '';
+
+  const [mobileHash, mobLookupId, appLookupId, profileKey] = await Promise.all([
+    sha256Hex(cleanedMobile),
+    buildMobileLookupId(cleanedMobile),
+    buildCodeLookupId(appNo),
+    buildProfileKey(appNo, cleanedMobile),
+  ]);
+  const maskedMobile = maskMobileNumber(cleanedMobile);
+  const nowTs = serverTimestamp();
+
+  const profRef = doc(db, 'studentTrackingProfiles', profileKey);
+  const existingProfSnap = await getDoc(profRef).catch(() => null);
+  const existingProf = existingProfSnap?.exists() ? existingProfSnap.data() : null;
+
+  let photoDataUrl = typeof existingProf?.photoDataUrl === 'string' ? existingProf.photoDataUrl : '';
+  if (!photoDataUrl && !payload.photoUrl && payload.photoMediaId) {
+    const rawMedia = await resolveMediaSource('', payload.photoMediaId, true);
+    if (rawMedia) {
+      photoDataUrl = await shrinkImageDataUrlForProfile(rawMedia);
+    }
+  }
+
+  const entry: TrackingIndexEntry = {
+    applicationNumber: appNo,
+    course: payload.course.trim().slice(0, 100),
+    admissionStage: payload.admissionStage,
+    hasStudentId: Boolean(studentId),
+  };
+
+  const profileData: Record<string, unknown> = {
+    applicationNumber: appNo,
+    studentId,
+    studentName: payload.studentName.trim().slice(0, 120),
+    fatherName: payload.fatherName.trim().slice(0, 120),
+    studentClass: payload.studentClass.trim().slice(0, 40),
+    course: payload.course.trim().slice(0, 100),
+    batch: payload.batch.trim().slice(0, 80),
+    academicSession: (payload.academicSession || '2026–2027').trim().slice(0, 40),
+    status: payload.status,
+    admissionStage: payload.admissionStage,
+    studentStatus: payload.studentStatus || '',
+    feeAmount: Math.max(0, Math.round(payload.feeAmount)),
+    paidAmount: Math.max(0, Math.round(payload.paidAmount)),
+    paymentStatus: payload.paymentStatus,
+    securityCode: (payload.securityCode || '').slice(0, 4),
+    qrToken: (payload.qrToken || '').slice(0, 120),
+    photoUrl: (payload.photoUrl || '').slice(0, 2000),
+    photoDataUrl: photoDataUrl.slice(0, 250000),
+    remarks: (payload.remarks || '').slice(0, 500),
+    submittedAt: existingProf?.submittedAt || payload.submittedAt || nowTs,
+    updatedAt: nowTs,
+  };
+
+  const batch = writeBatch(db);
+  batch.set(profRef, profileData);
+
+  // 1. Update Application Number index
+  batch.set(doc(db, 'trackingIndex', appLookupId), {
+    lookupType: 'id',
+    maskedMobile,
+    mobileHash,
+    entries: [entry],
+    updatedAt: nowTs,
+  });
+
+  // 2. Update Student ID index (when issued)
+  if (studentId) {
+    const studentIdLookup = await buildCodeLookupId(studentId);
+    batch.set(doc(db, 'trackingIndex', studentIdLookup), {
+      lookupType: 'id',
+      maskedMobile,
+      mobileHash,
+      entries: [entry],
+      updatedAt: nowTs,
+    });
+  }
+
+  // 3. Upsert into Mobile lookup index (supporting multiple applications per mobile)
+  const mobRef = doc(db, 'trackingIndex', mobLookupId);
+  const existingMobSnap = await getDoc(mobRef).catch(() => null);
+  const existingEntries: TrackingIndexEntry[] =
+    existingMobSnap && existingMobSnap.exists() && Array.isArray(existingMobSnap.data().entries)
+      ? (existingMobSnap.data().entries as TrackingIndexEntry[])
+      : [];
+
+  const filteredEntries = existingEntries.filter((e) => e.applicationNumber !== appNo);
+  const nextEntries = [...filteredEntries, entry].slice(0, 10);
+
+  batch.set(mobRef, {
+    lookupType: 'mobile',
+    maskedMobile,
+    mobileHash,
+    entries: nextEntries,
+    updatedAt: nowTs,
+  });
+
+  // 4. If mobile number was changed by admin, clean up old mobile index & old profile key
+  const prevCleaned = payload.previousMobile ? cleanPhone(payload.previousMobile) : '';
+  if (prevCleaned.length === 10 && prevCleaned !== cleanedMobile) {
+    const [oldMobLookupId, oldProfileKey] = await Promise.all([
+      buildMobileLookupId(prevCleaned),
+      buildProfileKey(appNo, prevCleaned),
+    ]);
+    batch.delete(doc(db, 'studentTrackingProfiles', oldProfileKey));
+    const oldMobRef = doc(db, 'trackingIndex', oldMobLookupId);
+    const oldMobSnap = await getDoc(oldMobRef).catch(() => null);
+    if (oldMobSnap && oldMobSnap.exists() && Array.isArray(oldMobSnap.data().entries)) {
+      const remaining = (oldMobSnap.data().entries as TrackingIndexEntry[]).filter(
+        (e) => e.applicationNumber !== appNo
+      );
+      if (remaining.length === 0) {
+        batch.delete(oldMobRef);
+      } else {
+        batch.set(oldMobRef, {
+          lookupType: 'mobile',
+          maskedMobile: maskMobileNumber(prevCleaned),
+          mobileHash: await sha256Hex(prevCleaned),
+          entries: remaining,
+          updatedAt: nowTs,
+        });
+      }
+    }
+  }
+
+  await batch.commit();
+}
+
+export async function markApplicationUnderReview(
+  application: AdmissionApplication,
+  academicSession = '2026–2027'
+): Promise<void> {
+  if (application.status !== 'pending') return;
+  try {
+    await syncAdminTrackingRecords({
+      applicationNumber: application.applicationNumber,
+      studentMobile: application.studentMobile,
+      studentName: application.studentName,
+      fatherName: application.fatherName,
+      studentClass: application.studentClass,
+      course: application.course,
+      batch: application.batch,
+      academicSession,
+      status: 'pending',
+      admissionStage: 'Under Review',
+      feeAmount: application.feeAmount,
+      paidAmount: application.paidAmount,
+      paymentStatus: application.paymentStatus,
+      photoUrl: application.photoUrl,
+      photoMediaId: application.photoMediaId,
+      remarks: application.remarks || 'Application is currently under review by administration.',
+      submittedAt: application.submittedAt,
+    });
+  } catch (err) {
+    console.warn('Unable to mark application under review in tracking index:', err);
+  }
+}
+
+/**
+ * Silent idempotent admin backfill so any previously submitted applications
+ * or approved students are immediately searchable via Track My Admission.
+ */
+export async function syncMissingTrackingRecords(
+  applications: AdmissionApplication[],
+  students: StudentRecord[],
+  academicSession = '2026–2027'
+): Promise<void> {
+  const studentByApp = new Map<string, StudentRecord>();
+  for (const s of students) {
+    studentByApp.set(s.applicationNumber, s);
+  }
+
+  for (const app of applications) {
+    try {
+      const linkedStudent = studentByApp.get(app.applicationNumber);
+      const mobile = linkedStudent?.studentMobile || app.studentMobile;
+      const profileKey = await buildProfileKey(app.applicationNumber, mobile);
+      const existingSnap = await getDoc(doc(db, 'studentTrackingProfiles', profileKey));
+
+      // Skip if already synced and matches current studentId & status
+      if (existingSnap.exists()) {
+        const data = existingSnap.data();
+        const expectedStage = deriveAdmissionStage(
+          app.status,
+          linkedStudent?.studentId || app.studentId,
+          data.admissionStage as AdmissionStage | undefined
+        );
+        if (
+          data.status === app.status &&
+          data.admissionStage === expectedStage &&
+          (data.studentId || '') === (linkedStudent?.studentId || app.studentId || '') &&
+          data.paidAmount === (linkedStudent?.paidAmount ?? app.paidAmount)
+        ) {
+          continue;
+        }
+      }
+
+      const stage = deriveAdmissionStage(
+        app.status,
+        linkedStudent?.studentId || app.studentId,
+        existingSnap.exists() ? (existingSnap.data().admissionStage as AdmissionStage) : undefined
+      );
+
+      await syncAdminTrackingRecords({
+        applicationNumber: app.applicationNumber,
+        studentId: linkedStudent?.studentId || app.studentId || '',
+        studentMobile: mobile,
+        studentName: linkedStudent?.studentName || app.studentName,
+        fatherName: linkedStudent?.fatherName || app.fatherName,
+        studentClass: linkedStudent?.studentClass || app.studentClass,
+        course: linkedStudent?.course || app.course,
+        batch: linkedStudent?.batch || app.batch,
+        academicSession: linkedStudent?.academicSession || academicSession,
+        status: app.status,
+        admissionStage: stage,
+        studentStatus: linkedStudent?.status || '',
+        feeAmount: linkedStudent?.feeAmount ?? app.feeAmount,
+        paidAmount: linkedStudent?.paidAmount ?? app.paidAmount,
+        paymentStatus: linkedStudent?.paymentStatus || app.paymentStatus,
+        securityCode: linkedStudent?.securityCode || '',
+        qrToken: linkedStudent?.qrToken || '',
+        photoUrl: linkedStudent?.photoUrl || app.photoUrl,
+        photoMediaId: linkedStudent?.photoMediaId || app.photoMediaId,
+        remarks: app.remarks || '',
+        submittedAt: app.submittedAt,
+      });
+    } catch (err) {
+      console.warn(`Tracking backfill skipped for ${app.applicationNumber}:`, err);
+    }
   }
 }
 
@@ -567,6 +1044,30 @@ export async function approveApplicationAndCreateStudent(
       });
 
       if (!result.collision && result.student) {
+        // Sync verified student tracking profile & Student ID lookup index
+        await syncAdminTrackingRecords({
+          applicationNumber: application.applicationNumber,
+          studentId: result.student.studentId,
+          studentMobile: result.student.studentMobile,
+          studentName: result.student.studentName,
+          fatherName: result.student.fatherName,
+          studentClass: result.student.studentClass,
+          course: result.student.course,
+          batch: result.student.batch,
+          academicSession: result.student.academicSession,
+          status: 'approved',
+          admissionStage: 'Student ID Generated',
+          studentStatus: 'active',
+          feeAmount: result.student.feeAmount,
+          paidAmount: result.student.paidAmount,
+          paymentStatus: result.student.paymentStatus,
+          securityCode: result.student.securityCode,
+          qrToken: result.student.qrToken,
+          photoUrl: result.student.photoUrl,
+          photoMediaId: result.student.photoMediaId,
+          remarks: `Congratulations! Admission approved. Your Student ID is ${result.student.studentId}.`,
+          submittedAt: application.submittedAt,
+        }).catch((syncErr) => console.warn('Tracking sync after approval warning:', syncErr));
         return result.student;
       }
     } catch (error) {
@@ -603,6 +1104,25 @@ export async function rejectApplication(
     }
 
     await batch.commit();
+    await syncAdminTrackingRecords({
+      applicationNumber: application.applicationNumber,
+      studentMobile: application.studentMobile,
+      studentName: application.studentName,
+      fatherName: application.fatherName,
+      studentClass: application.studentClass,
+      course: application.course,
+      batch: application.batch,
+      academicSession: '2026–2027',
+      status: 'rejected',
+      admissionStage: 'Rejected',
+      feeAmount: application.feeAmount,
+      paidAmount: application.paidAmount,
+      paymentStatus: application.paymentStatus,
+      photoUrl: application.photoUrl,
+      photoMediaId: application.photoMediaId,
+      remarks: cleanRemarks,
+      submittedAt: application.submittedAt,
+    }).catch((syncErr) => console.warn('Tracking sync after reject warning:', syncErr));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `applications/${application.id}`);
   }
@@ -656,6 +1176,27 @@ export async function updateApplicationDetails(
     }
 
     await batch.commit();
+    await syncAdminTrackingRecords({
+      applicationNumber: application.applicationNumber,
+      studentId: application.studentId || '',
+      studentMobile: String(allowed.studentMobile),
+      previousMobile: application.studentMobile,
+      studentName: String(allowed.studentName),
+      fatherName: String(allowed.fatherName),
+      studentClass: String(allowed.studentClass),
+      course: String(allowed.course),
+      batch: String(allowed.batch),
+      academicSession: '2026–2027',
+      status: application.status,
+      admissionStage: deriveAdmissionStage(application.status, application.studentId),
+      feeAmount: Number(allowed.feeAmount),
+      paidAmount: application.paidAmount,
+      paymentStatus: allowed.paymentStatus as PaymentStatus,
+      photoUrl: application.photoUrl,
+      photoMediaId: application.photoMediaId,
+      remarks: String(allowed.remarks),
+      submittedAt: application.submittedAt,
+    }).catch((syncErr) => console.warn('Tracking sync after app edit warning:', syncErr));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `applications/${application.id}`);
   }
@@ -666,6 +1207,42 @@ export async function deleteApplicationRecord(application: AdmissionApplication)
     const batch = writeBatch(db);
     batch.delete(doc(db, 'applications', application.id));
     batch.delete(doc(db, 'applicationStatus', application.trackingKey));
+
+    // Also remove tracking index and tracking profile for deleted application
+    const cleanedMobile = cleanPhone(application.studentMobile);
+    const appLookupId = await buildCodeLookupId(application.applicationNumber);
+    batch.delete(doc(db, 'trackingIndex', appLookupId));
+    if (application.studentId) {
+      const stuLookupId = await buildCodeLookupId(application.studentId);
+      batch.delete(doc(db, 'trackingIndex', stuLookupId));
+    }
+    if (cleanedMobile.length === 10) {
+      const [profileKey, mobLookupId, mobileHash] = await Promise.all([
+        buildProfileKey(application.applicationNumber, cleanedMobile),
+        buildMobileLookupId(cleanedMobile),
+        sha256Hex(cleanedMobile),
+      ]);
+      batch.delete(doc(db, 'studentTrackingProfiles', profileKey));
+      const mobRef = doc(db, 'trackingIndex', mobLookupId);
+      const mobSnap = await getDoc(mobRef).catch(() => null);
+      if (mobSnap && mobSnap.exists() && Array.isArray(mobSnap.data().entries)) {
+        const remaining = (mobSnap.data().entries as TrackingIndexEntry[]).filter(
+          (e) => e.applicationNumber !== application.applicationNumber
+        );
+        if (remaining.length === 0) {
+          batch.delete(mobRef);
+        } else {
+          batch.set(mobRef, {
+            lookupType: 'mobile',
+            maskedMobile: maskMobileNumber(cleanedMobile),
+            mobileHash,
+            entries: remaining,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
+    }
+
     await batch.commit();
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `applications/${application.id}`);
@@ -680,23 +1257,54 @@ export async function updateStudentProfile(
     const newFee = Math.max(0, Number(updates.feeAmount ?? student.feeAmount));
     const newPaid = Math.max(0, Number(updates.paidAmount ?? student.paidAmount));
     const newPaymentStatus = computePaymentStatus(newFee, newPaid);
+    const nextMobile = cleanPhone(updates.studentMobile ?? student.studentMobile);
+    const nextName = (updates.studentName ?? student.studentName).trim().slice(0, 120);
+    const nextFather = (updates.fatherName ?? student.fatherName).trim().slice(0, 120);
+    const nextClass = (updates.studentClass ?? student.studentClass).trim().slice(0, 40);
+    const nextCourse = (updates.course ?? student.course).trim().slice(0, 100);
+    const nextBatch = (updates.batch ?? student.batch).trim().slice(0, 80);
+    const nextStatus = updates.status ?? student.status;
 
     await updateDoc(doc(db, 'students', student.studentId), {
-      studentName: (updates.studentName ?? student.studentName).trim().slice(0, 120),
-      studentMobile: cleanPhone(updates.studentMobile ?? student.studentMobile),
+      studentName: nextName,
+      studentMobile: nextMobile,
       studentWhatsapp: cleanPhone(updates.studentWhatsapp ?? student.studentWhatsapp ?? student.studentMobile),
-      fatherName: (updates.fatherName ?? student.fatherName).trim().slice(0, 120),
+      fatherName: nextFather,
       fatherMobile: cleanPhone(updates.fatherMobile ?? student.fatherMobile ?? ''),
-      studentClass: (updates.studentClass ?? student.studentClass).trim().slice(0, 40),
-      course: (updates.course ?? student.course).trim().slice(0, 100),
-      batch: (updates.batch ?? student.batch).trim().slice(0, 80),
+      studentClass: nextClass,
+      course: nextCourse,
+      batch: nextBatch,
       address: (updates.address ?? student.address ?? '').trim().slice(0, 400),
       feeAmount: newFee,
       paidAmount: newPaid,
       paymentStatus: newPaymentStatus,
-      status: updates.status ?? student.status,
+      status: nextStatus,
       updatedAt: serverTimestamp(),
     });
+
+    await syncAdminTrackingRecords({
+      applicationNumber: student.applicationNumber,
+      studentId: student.studentId,
+      studentMobile: nextMobile,
+      previousMobile: student.studentMobile,
+      studentName: nextName,
+      fatherName: nextFather,
+      studentClass: nextClass,
+      course: nextCourse,
+      batch: nextBatch,
+      academicSession: student.academicSession,
+      status: 'approved',
+      admissionStage: 'Student ID Generated',
+      studentStatus: nextStatus,
+      feeAmount: newFee,
+      paidAmount: newPaid,
+      paymentStatus: newPaymentStatus,
+      securityCode: student.securityCode,
+      qrToken: student.qrToken,
+      photoUrl: student.photoUrl,
+      photoMediaId: student.photoMediaId,
+      submittedAt: student.approvedAt,
+    }).catch((syncErr) => console.warn('Tracking sync after student edit warning:', syncErr));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `students/${student.studentId}`);
   }
@@ -718,6 +1326,29 @@ export async function toggleStudentStatus(student: StudentRecord): Promise<void>
       });
     }
     await batch.commit();
+
+    await syncAdminTrackingRecords({
+      applicationNumber: student.applicationNumber,
+      studentId: student.studentId,
+      studentMobile: student.studentMobile,
+      studentName: student.studentName,
+      fatherName: student.fatherName,
+      studentClass: student.studentClass,
+      course: student.course,
+      batch: student.batch,
+      academicSession: student.academicSession,
+      status: 'approved',
+      admissionStage: 'Student ID Generated',
+      studentStatus: nextStatus,
+      feeAmount: student.feeAmount,
+      paidAmount: student.paidAmount,
+      paymentStatus: student.paymentStatus,
+      securityCode: student.securityCode,
+      qrToken: student.qrToken,
+      photoUrl: student.photoUrl,
+      photoMediaId: student.photoMediaId,
+      submittedAt: student.approvedAt,
+    }).catch((syncErr) => console.warn('Tracking sync after status toggle warning:', syncErr));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `students/${student.studentId}`);
   }
@@ -757,7 +1388,31 @@ export async function regenerateStudentSecurityCode(student: StudentRecord): Pro
         return true;
       });
 
-      if (done) return newCode;
+      if (done) {
+        await syncAdminTrackingRecords({
+          applicationNumber: student.applicationNumber,
+          studentId: student.studentId,
+          studentMobile: student.studentMobile,
+          studentName: student.studentName,
+          fatherName: student.fatherName,
+          studentClass: student.studentClass,
+          course: student.course,
+          batch: student.batch,
+          academicSession: student.academicSession,
+          status: 'approved',
+          admissionStage: 'Student ID Generated',
+          studentStatus: student.status,
+          feeAmount: student.feeAmount,
+          paidAmount: student.paidAmount,
+          paymentStatus: student.paymentStatus,
+          securityCode: newCode,
+          qrToken: student.qrToken,
+          photoUrl: student.photoUrl,
+          photoMediaId: student.photoMediaId,
+          submittedAt: student.approvedAt,
+        }).catch((syncErr) => console.warn('Tracking sync after code regen warning:', syncErr));
+        return newCode;
+      }
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `students/${student.studentId}`);
     }
@@ -857,6 +1512,58 @@ export async function recordVerifiedPayment(params: {
     }
 
     await batch.commit();
+
+    // Sync fee payment status to studentTrackingProfiles
+    if (params.student) {
+      const nextPaid = params.student.paidAmount + amount;
+      const nextStatus = computePaymentStatus(params.student.feeAmount, nextPaid);
+      await syncAdminTrackingRecords({
+        applicationNumber: params.student.applicationNumber,
+        studentId: params.student.studentId,
+        studentMobile: params.student.studentMobile,
+        studentName: params.student.studentName,
+        fatherName: params.student.fatherName,
+        studentClass: params.student.studentClass,
+        course: params.student.course,
+        batch: params.student.batch,
+        academicSession: params.student.academicSession,
+        status: 'approved',
+        admissionStage: 'Student ID Generated',
+        studentStatus: params.student.status,
+        feeAmount: params.student.feeAmount,
+        paidAmount: nextPaid,
+        paymentStatus: nextStatus,
+        securityCode: params.student.securityCode,
+        qrToken: params.student.qrToken,
+        photoUrl: params.student.photoUrl,
+        photoMediaId: params.student.photoMediaId,
+        submittedAt: params.student.approvedAt,
+      }).catch((syncErr) => console.warn('Tracking sync after student payment warning:', syncErr));
+    } else if (params.application) {
+      const nextPaid = params.application.paidAmount + amount;
+      const nextStatus = computePaymentStatus(params.application.feeAmount, nextPaid);
+      await syncAdminTrackingRecords({
+        applicationNumber: params.application.applicationNumber,
+        studentId: params.application.studentId || '',
+        studentMobile: params.application.studentMobile,
+        studentName: params.application.studentName,
+        fatherName: params.application.fatherName,
+        studentClass: params.application.studentClass,
+        course: params.application.course,
+        batch: params.application.batch,
+        academicSession: '2026–2027',
+        status: params.application.status,
+        admissionStage: deriveAdmissionStage(params.application.status, params.application.studentId),
+        feeAmount: params.application.feeAmount,
+        paidAmount: nextPaid,
+        paymentStatus: nextStatus,
+        photoUrl: params.application.photoUrl,
+        photoMediaId: params.application.photoMediaId,
+        remarks: params.application.remarks || '',
+        submittedAt: params.application.submittedAt,
+      }).catch((syncErr) => console.warn('Tracking sync after app payment warning:', syncErr));
+    }
+
     return {
       id: receiptNumber,
       ...paymentPayload,
@@ -1114,6 +1821,17 @@ export async function saveBatch(
   batchItem: Omit<BatchItem, 'id' | 'updatedAt'> & { id?: string }
 ): Promise<void> {
   const id = sanitizeId(batchItem.id || `batch_${Date.now()}`);
+  const cleanScheduledDays =
+    Array.isArray(batchItem.scheduledDays) && batchItem.scheduledDays.length > 0
+      ? [...new Set(batchItem.scheduledDays.filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort(
+          (a, b) => a - b
+        )
+      : DEFAULT_SCHEDULED_DAYS;
+  const cleanStartDate =
+    batchItem.scheduleStartDate && /^\d{4}-\d{2}-\d{2}$/.test(batchItem.scheduleStartDate.trim())
+      ? batchItem.scheduleStartDate.trim()
+      : '';
+
   try {
     await setDoc(doc(db, 'batches', id), {
       name: batchItem.name.trim().slice(0, 80),
@@ -1125,6 +1843,8 @@ export async function saveBatch(
         Number(batchItem.feeOverride) > 0
           ? Number(batchItem.feeOverride)
           : null,
+      scheduledDays: cleanScheduledDays,
+      scheduleStartDate: cleanStartDate,
       active: Boolean(batchItem.active),
       order: Number(batchItem.order) || 1,
       updatedAt: serverTimestamp(),
@@ -1186,6 +1906,7 @@ export async function saveInstituteSettings(
       email: settings.email.trim().slice(0, 160),
       address: settings.address.trim().slice(0, 300),
       signatureText: settings.signatureText.trim().slice(0, 80),
+      attendanceExitTracking: Boolean(settings.attendanceExitTracking),
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
@@ -1234,6 +1955,9 @@ export function subscribeAdminCollections(handlers: {
   onFees: (items: FeeRule[]) => void;
   onAdmins: (items: AdminUserRecord[]) => void;
   onSettings: (settings: InstituteSettings) => void;
+  onAttendance?: (items: AttendanceRecord[]) => void;
+  onAttendanceAuditLogs?: (items: AttendanceAuditLog[]) => void;
+  onAttendanceHolidays?: (items: AttendanceHoliday[]) => void;
   onError?: (err: Error) => void;
 }): () => void {
   const report = (err: unknown, path: string) => {
@@ -1387,9 +2111,675 @@ export function subscribeAdminCollections(handlers: {
       },
       (err) => report(err, 'settings/main')
     ),
+    ...(handlers.onAttendance
+      ? [
+          onSnapshot(
+            collection(db, 'attendance'),
+            (snap) => {
+              const items = snap.docs
+                .map((d) => ({ id: d.id, ...d.data() }) as AttendanceRecord)
+                .sort((a, b) => {
+                  if (a.attendanceDate !== b.attendanceDate) {
+                    return b.attendanceDate.localeCompare(a.attendanceDate);
+                  }
+                  const ta = toEpochMs(a.entryTime || a.createdAt) || 0;
+                  const tb = toEpochMs(b.entryTime || b.createdAt) || 0;
+                  return tb - ta;
+                });
+              handlers.onAttendance?.(items);
+            },
+            (err) => report(err, 'attendance')
+          ),
+        ]
+      : []),
+    ...(handlers.onAttendanceAuditLogs
+      ? [
+          onSnapshot(
+            collection(db, 'attendanceAuditLogs'),
+            (snap) => {
+              const items = snap.docs
+                .map((d) => ({ id: d.id, ...d.data() }) as AttendanceAuditLog)
+                .sort((a, b) => (toEpochMs(b.modifiedAt) || 0) - (toEpochMs(a.modifiedAt) || 0));
+              handlers.onAttendanceAuditLogs?.(items);
+            },
+            (err) => report(err, 'attendanceAuditLogs')
+          ),
+        ]
+      : []),
+    ...(handlers.onAttendanceHolidays
+      ? [
+          onSnapshot(
+            collection(db, 'attendanceHolidays'),
+            (snap) => {
+              const items = snap.docs
+                .map((d) => ({ id: d.id, ...d.data() }) as AttendanceHoliday)
+                .sort((a, b) => b.date.localeCompare(a.date));
+              handlers.onAttendanceHolidays?.(items);
+            },
+            (err) => report(err, 'attendanceHolidays')
+          ),
+        ]
+      : []),
   ];
 
   return () => {
     unsubs.forEach((u) => u());
   };
 }
+
+// =============================================================================
+// QR-BASED AUTOMATIC ATTENDANCE MANAGEMENT SYSTEM
+// =============================================================================
+
+export async function buildPublicAttendanceKey(
+  studentId: string,
+  rawMobile: string,
+  year: number
+): Promise<string> {
+  const normId = sanitizeId(studentId.trim().toUpperCase());
+  const cleaned = cleanPhone(rawMobile);
+  const hash = await sha256Hex(`${normId}:${cleaned}`);
+  return `attpub_${hash}_${year}`;
+}
+
+/**
+ * Syncs an approved student's yearly attendance ledger to /studentAttendancePublic/{key}
+ * so the student can securely view their attendance after OTP verification without
+ * exposing the raw /attendance collection publicly.
+ */
+export async function syncStudentPublicAttendanceYear(
+  student: StudentRecord,
+  batches: BatchItem[],
+  year: number,
+  extraRecord?: { date: string; entry: StudentAttendanceDayEntry }
+): Promise<void> {
+  const cleanedMobile = cleanPhone(student.studentMobile);
+  if (cleanedMobile.length !== 10) return;
+
+  const resolvedBatch = resolveStudentBatch(student.batch, batches);
+  const attKey = await buildPublicAttendanceKey(student.studentId, cleanedMobile, year);
+  const enrolledDate = formatIstDateYmd(student.approvedAt) || '';
+
+  try {
+    const q = query(collection(db, 'attendance'), where('studentId', '==', student.studentId));
+    const snap = await getDocs(q);
+
+    const records: Record<string, StudentAttendanceDayEntry> = {};
+    snap.docs.forEach((d) => {
+      const data = d.data() as AttendanceRecord;
+      if (data.attendanceDate && data.attendanceDate.startsWith(`${year}-`)) {
+        records[data.attendanceDate] = {
+          status: data.attendanceStatus,
+          entryTimeMs: toEpochMs(data.entryTime),
+          exitTimeMs: toEpochMs(data.exitTime),
+          batchTiming: data.batchTiming || resolvedBatch.batchTiming,
+        };
+      }
+    });
+
+    if (extraRecord && extraRecord.date.startsWith(`${year}-`)) {
+      records[extraRecord.date] = extraRecord.entry;
+    }
+
+    await setDoc(doc(db, 'studentAttendancePublic', attKey), {
+      studentId: student.studentId,
+      year,
+      batchId: resolvedBatch.batchId,
+      batchTiming: resolvedBatch.batchTiming,
+      enrolledDate,
+      scheduledDays: resolvedBatch.scheduledDays,
+      records,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    console.warn(`Public attendance sync skipped for ${student.studentId}:`, err);
+  }
+}
+
+export type QrAttendanceOutcome =
+  | 'MARKED_PRESENT'
+  | 'EXIT_RECORDED'
+  | 'ALREADY_PRESENT'
+  | 'REJECTED_SUSPENDED'
+  | 'REJECTED_PENDING'
+  | 'REJECTED_INVALID';
+
+export interface QrAttendanceResult {
+  outcome: QrAttendanceOutcome;
+  title: string;
+  message: string;
+  scannedCode: string;
+  attendanceDate: string; // YYYY-MM-DD (IST)
+  timeLabel: string; // IST time string
+  student?: StudentRecord;
+  application?: AdmissionApplication;
+  batchTiming?: string;
+  entryTimeLabel?: string;
+  exitTimeLabel?: string;
+  attendanceId?: string;
+}
+
+/**
+ * Automatic Continuous QR Attendance Transaction:
+ * - Fetches server-authoritative IST date & time (/api/time/ist)
+ * - Verifies student against Firestore /students/{studentId}
+ * - Rejects suspended, pending, rejected, or invalid QR codes
+ * - Uses deterministic doc ID att_{studentId}_{batchId}_{YYYY-MM-DD} inside a Firestore transaction
+ * - Guarantees max one valid attendance record per student per batch per day
+ * - Optionally records separate Exit time when enabled by admin (with 60s anti-bounce guard)
+ * - Immediately syncs OTP-gated student public attendance ledger
+ */
+export async function recordQrAttendanceTransaction(
+  rawQrText: string,
+  batches: BatchItem[],
+  adminEmail: string,
+  enableExitTracking = false
+): Promise<QrAttendanceResult> {
+  const cleanedRaw = rawQrText.trim().slice(0, 180);
+  const extractedId = cleanedRaw.startsWith('ZOC:') ? cleanedRaw.slice(4).trim() : cleanedRaw;
+  const isIdSafe = /^[a-zA-Z0-9_\-]{3,128}$/.test(extractedId);
+
+  const serverIst = await fetchServerIstTime();
+  const istDate = serverIst.date;
+  const timeLabel = `${serverIst.time} IST`;
+
+  const writeScanAudit = async (
+    statusResult: ScanStatusResult,
+    reason: string,
+    studentId = '',
+    studentName = 'Unknown'
+  ) => {
+    const scanId = `SCAN_${Date.now()}_${Math.floor(100 + Math.random() * 900)}`;
+    try {
+      await setDoc(doc(db, 'scanHistory', scanId), {
+        scannedCode: cleanedRaw || 'EMPTY',
+        studentId: studentId.slice(0, 64),
+        studentName: studentName.slice(0, 120),
+        statusResult,
+        reason: reason.slice(0, 240),
+        scannedBy: adminEmail,
+        scannedAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.warn('Scan audit write warning:', e);
+    }
+  };
+
+  if (!isIdSafe) {
+    const msg = 'Invalid QR code format — not a registered institute Student ID.';
+    await writeScanAudit('INVALID', msg);
+    return {
+      outcome: 'REJECTED_INVALID',
+      title: 'Invalid QR Code',
+      message: msg,
+      scannedCode: cleanedRaw,
+      attendanceDate: istDate,
+      timeLabel,
+    };
+  }
+
+  try {
+    // Pre-check student or application reference to obtain studentId
+    let targetStudentId = extractedId;
+    const directSnap = await getDoc(doc(db, 'students', extractedId));
+    if (!directSnap.exists()) {
+      const appSnap = await getDoc(doc(db, 'applications', extractedId));
+      if (appSnap.exists()) {
+        const appData = { id: appSnap.id, ...appSnap.data() } as AdmissionApplication;
+        if (appData.status === 'pending') {
+          const msg = 'Admission application is still PENDING approval.';
+          await writeScanAudit('PENDING', msg, appData.applicationNumber, appData.studentName);
+          return {
+            outcome: 'REJECTED_PENDING',
+            title: 'Admission Pending',
+            message: msg,
+            scannedCode: cleanedRaw,
+            attendanceDate: istDate,
+            timeLabel,
+            application: appData,
+          };
+        }
+        if (appData.status === 'rejected') {
+          const msg = 'Admission application was REJECTED.';
+          await writeScanAudit('INVALID', msg, appData.applicationNumber, appData.studentName);
+          return {
+            outcome: 'REJECTED_INVALID',
+            title: 'Application Rejected',
+            message: msg,
+            scannedCode: cleanedRaw,
+            attendanceDate: istDate,
+            timeLabel,
+            application: appData,
+          };
+        }
+        if (appData.status === 'approved' && appData.studentId) {
+          targetStudentId = appData.studentId;
+        }
+      }
+    }
+
+    // Atomic transaction on /students/{targetStudentId} + /attendance/{attendanceId}
+    const txResult = await runTransaction(db, async (tx) => {
+      const stuRef = doc(db, 'students', targetStudentId);
+      const stuSnap = await tx.get(stuRef);
+
+      if (!stuSnap.exists()) {
+        return {
+          outcome: 'REJECTED_INVALID' as const,
+          title: 'Student Not Found',
+          message: 'No approved student record matches this QR code.',
+          student: undefined,
+        };
+      }
+
+      const student = { id: stuSnap.id, ...stuSnap.data() } as StudentRecord;
+      if (student.status !== 'active') {
+        return {
+          outcome: 'REJECTED_SUSPENDED' as const,
+          title: 'Student Suspended',
+          message: 'Student ID is currently SUSPENDED. Attendance cannot be recorded.',
+          student,
+        };
+      }
+
+      const resolvedBatch = resolveStudentBatch(student.batch, batches);
+      const attendanceId = buildAttendanceDocId(student.studentId, resolvedBatch.batchId, istDate);
+      const attRef = doc(db, 'attendance', attendanceId);
+      const attSnap = await tx.get(attRef);
+      const nowTs = serverTimestamp();
+
+      if (!attSnap.exists()) {
+        tx.set(attRef, {
+          attendanceId,
+          studentId: student.studentId,
+          studentName: student.studentName.trim().slice(0, 120),
+          batchId: resolvedBatch.batchId,
+          batchTiming: resolvedBatch.batchTiming.slice(0, 80),
+          class: student.studentClass.trim().slice(0, 40),
+          course: student.course.trim().slice(0, 100),
+          attendanceDate: istDate,
+          entryTime: nowTs,
+          attendanceStatus: 'Present',
+          source: 'qr',
+          recordedBy: adminEmail,
+          createdAt: nowTs,
+          updatedAt: nowTs,
+        });
+
+        return {
+          outcome: 'MARKED_PRESENT' as const,
+          title: 'Attendance Marked Present',
+          message: `Present recorded for ${resolvedBatch.batchTiming}.`,
+          student,
+          batchTiming: resolvedBatch.batchTiming,
+          attendanceId,
+          entryTimeLabel: timeLabel,
+          entryMs: serverIst.epochMs,
+          exitMs: null as number | null,
+        };
+      }
+
+      const existing = attSnap.data() as AttendanceRecord;
+      const existingEntryMs = toEpochMs(existing.entryTime);
+      const existingExitMs = toEpochMs(existing.exitTime);
+
+      if (existing.attendanceStatus === 'Absent') {
+        // Student was earlier manually marked Absent, now checked in via QR
+        tx.update(attRef, {
+          attendanceStatus: 'Present',
+          entryTime: nowTs,
+          source: 'manual',
+          lastModifiedBy: adminEmail,
+          correctionReason: 'Student checked in via automatic QR scanner',
+          updatedAt: nowTs,
+        });
+        return {
+          outcome: 'MARKED_PRESENT' as const,
+          title: 'Attendance Marked Present',
+          message: `Updated to Present for ${resolvedBatch.batchTiming}.`,
+          student,
+          batchTiming: resolvedBatch.batchTiming,
+          attendanceId,
+          entryTimeLabel: timeLabel,
+          entryMs: serverIst.epochMs,
+          exitMs: null as number | null,
+        };
+      }
+
+      // Already marked Present for today in this batch
+      if (enableExitTracking && !existingExitMs) {
+        const elapsedMs = existingEntryMs ? serverIst.epochMs - existingEntryMs : 65_000;
+        if (elapsedMs >= 60_000) {
+          tx.update(attRef, {
+            exitTime: nowTs,
+            source: 'qr',
+            lastModifiedBy: adminEmail,
+            updatedAt: nowTs,
+          });
+          return {
+            outcome: 'EXIT_RECORDED' as const,
+            title: 'Exit Time Recorded',
+            message: `Exit logged at ${timeLabel}.`,
+            student,
+            batchTiming: existing.batchTiming || resolvedBatch.batchTiming,
+            attendanceId,
+            entryTimeLabel: existingEntryMs ? formatIstTime(existingEntryMs) : '—',
+            exitTimeLabel: timeLabel,
+            entryMs: existingEntryMs,
+            exitMs: serverIst.epochMs,
+          };
+        }
+        return {
+          outcome: 'ALREADY_PRESENT' as const,
+          title: 'Already Marked Present',
+          message: `Entry already recorded at ${existingEntryMs ? formatIstTime(existingEntryMs) : 'today'}. Wait 1 minute to scan exit.`,
+          student,
+          batchTiming: existing.batchTiming || resolvedBatch.batchTiming,
+          attendanceId,
+          entryTimeLabel: existingEntryMs ? formatIstTime(existingEntryMs) : '—',
+          entryMs: existingEntryMs,
+          exitMs: null as number | null,
+        };
+      }
+
+      return {
+        outcome: 'ALREADY_PRESENT' as const,
+        title: 'Already Marked Present',
+        message: existingExitMs
+          ? `Entry (${existingEntryMs ? formatIstTime(existingEntryMs) : '—'}) & Exit (${formatIstTime(existingExitMs)}) already recorded today.`
+          : `Already marked Present today at ${existingEntryMs ? formatIstTime(existingEntryMs) : 'earlier'}.`,
+        student,
+        batchTiming: existing.batchTiming || resolvedBatch.batchTiming,
+        attendanceId,
+        entryTimeLabel: existingEntryMs ? formatIstTime(existingEntryMs) : '—',
+        exitTimeLabel: existingExitMs ? formatIstTime(existingExitMs) : undefined,
+        entryMs: existingEntryMs,
+        exitMs: existingExitMs,
+      };
+    });
+
+    // Write scan audit log + sync student public attendance
+    if (txResult.outcome === 'MARKED_PRESENT' || txResult.outcome === 'EXIT_RECORDED') {
+      void writeScanAudit(
+        'VALID',
+        `${txResult.title} (${istDate})`,
+        txResult.student?.studentId,
+        txResult.student?.studentName
+      );
+      if (txResult.student) {
+        void syncStudentPublicAttendanceYear(txResult.student, batches, serverIst.year, {
+          date: istDate,
+          entry: {
+            status: 'Present',
+            entryTimeMs: txResult.entryMs ?? serverIst.epochMs,
+            exitTimeMs: txResult.exitMs ?? null,
+            batchTiming: txResult.batchTiming || txResult.student.batch,
+          },
+        });
+      }
+    } else if (txResult.outcome === 'ALREADY_PRESENT') {
+      void writeScanAudit(
+        'VALID',
+        `Already Marked Present (${istDate})`,
+        txResult.student?.studentId,
+        txResult.student?.studentName
+      );
+    } else {
+      void writeScanAudit(
+        'INVALID',
+        txResult.message,
+        txResult.student?.studentId || extractedId,
+        txResult.student?.studentName || 'Unknown'
+      );
+    }
+
+    return {
+      outcome: txResult.outcome,
+      title: txResult.title,
+      message: txResult.message,
+      scannedCode: cleanedRaw,
+      attendanceDate: istDate,
+      timeLabel,
+      student: txResult.student,
+      batchTiming: txResult.batchTiming,
+      attendanceId: txResult.attendanceId,
+      entryTimeLabel: txResult.entryTimeLabel,
+      exitTimeLabel: txResult.exitTimeLabel,
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `attendance/${extractedId}`);
+  }
+}
+
+/**
+ * Admin Manual Attendance Entry / Correction with mandatory reason & immutable audit log.
+ */
+export async function saveManualAttendanceCorrection(params: {
+  student: StudentRecord;
+  batches: BatchItem[];
+  attendanceDate: string; // YYYY-MM-DD
+  newStatus: AttendanceStatus;
+  reason: string;
+  adminEmail: string;
+}): Promise<void> {
+  const { student, batches, attendanceDate, newStatus, reason, adminEmail } = params;
+  const cleanDate = attendanceDate.trim();
+  const cleanReason = reason.trim().slice(0, 400);
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
+    throw new Error('Please choose a valid attendance date (YYYY-MM-DD).');
+  }
+  if (cleanReason.length < 3) {
+    throw new Error('Please provide a clear reason (at least 3 characters) for manual attendance correction.');
+  }
+
+  const resolvedBatch = resolveStudentBatch(student.batch, batches);
+  const attendanceId = buildAttendanceDocId(student.studentId, resolvedBatch.batchId, cleanDate);
+  const logId = sanitizeId(`attlog_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`);
+
+  try {
+    await runTransaction(db, async (tx) => {
+      const attRef = doc(db, 'attendance', attendanceId);
+      const attSnap = await tx.get(attRef);
+      const nowTs = serverTimestamp();
+
+      const previousStatus: AttendanceStatus | 'None' = attSnap.exists()
+        ? ((attSnap.data().attendanceStatus as AttendanceStatus) || 'None')
+        : 'None';
+
+      if (attSnap.exists()) {
+        const existingData = attSnap.data() as AttendanceRecord;
+        tx.update(attRef, {
+          attendanceStatus: newStatus,
+          entryTime: newStatus === 'Present' ? existingData.entryTime || nowTs : null,
+          exitTime: newStatus === 'Present' ? existingData.exitTime || null : null,
+          source: 'manual',
+          lastModifiedBy: adminEmail,
+          correctionReason: cleanReason,
+          updatedAt: nowTs,
+        });
+      } else {
+        tx.set(attRef, {
+          attendanceId,
+          studentId: student.studentId,
+          studentName: student.studentName.trim().slice(0, 120),
+          batchId: resolvedBatch.batchId,
+          batchTiming: resolvedBatch.batchTiming.slice(0, 80),
+          class: student.studentClass.trim().slice(0, 40),
+          course: student.course.trim().slice(0, 100),
+          attendanceDate: cleanDate,
+          entryTime: newStatus === 'Present' ? nowTs : null,
+          attendanceStatus: newStatus,
+          source: 'manual',
+          recordedBy: adminEmail,
+          lastModifiedBy: adminEmail,
+          correctionReason: cleanReason,
+          createdAt: nowTs,
+          updatedAt: nowTs,
+        });
+      }
+
+      tx.set(doc(db, 'attendanceAuditLogs', logId), {
+        logId,
+        attendanceId,
+        studentId: student.studentId,
+        studentName: student.studentName.trim().slice(0, 120),
+        batchId: resolvedBatch.batchId,
+        attendanceDate: cleanDate,
+        previousStatus,
+        newStatus,
+        reason: cleanReason,
+        modifiedBy: adminEmail,
+        modifiedAt: nowTs,
+      });
+    });
+
+    const year = Number(cleanDate.slice(0, 4)) || new Date().getFullYear();
+    await syncStudentPublicAttendanceYear(student, batches, year);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `attendance/${attendanceId}`);
+  }
+}
+
+export async function saveAttendanceHoliday(params: {
+  date: string;
+  title: string;
+  batchId: string; // 'ALL' or batchId
+  dayType: HolidayDayType;
+  adminEmail: string;
+}): Promise<void> {
+  const cleanDate = params.date.trim();
+  const cleanTitle = params.title.trim().slice(0, 120);
+  const cleanBatchId = sanitizeId(params.batchId || 'ALL');
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
+    throw new Error('Please enter a valid date (YYYY-MM-DD).');
+  }
+  if (cleanTitle.length < 2) {
+    throw new Error('Please enter a holiday or schedule note title.');
+  }
+
+  const holidayId = sanitizeId(`hol_${cleanDate}_${cleanBatchId}`);
+  try {
+    await setDoc(doc(db, 'attendanceHolidays', holidayId), {
+      date: cleanDate,
+      title: cleanTitle,
+      batchId: cleanBatchId,
+      dayType: params.dayType,
+      createdBy: params.adminEmail,
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `attendanceHolidays/${holidayId}`);
+  }
+}
+
+export async function deleteAttendanceHoliday(id: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'attendanceHolidays', id));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `attendanceHolidays/${id}`);
+  }
+}
+
+export async function fetchPublicAttendanceHolidays(): Promise<AttendanceHoliday[]> {
+  try {
+    const snap = await getDocs(collection(db, 'attendanceHolidays'));
+    return snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }) as AttendanceHoliday)
+      .sort((a, b) => b.date.localeCompare(a.date));
+  } catch (err) {
+    console.warn('Unable to load public attendance holidays:', err);
+    return [];
+  }
+}
+
+/**
+ * Fetches an OTP-verified student's yearly attendance ledger using the unguessable
+ * SHA-256 attendance key derived from studentId + verifiedMobile + year.
+ */
+export async function fetchVerifiedStudentAttendance(
+  studentId: string,
+  verifiedMobile: string,
+  year: number
+): Promise<StudentAttendancePublicDoc | null> {
+  const normId = sanitizeId(studentId.trim().toUpperCase());
+  const cleaned = cleanPhone(verifiedMobile);
+  if (!normId || cleaned.length !== 10) return null;
+
+  const attKey = await buildPublicAttendanceKey(normId, cleaned, year);
+  try {
+    const snap = await getDoc(doc(db, 'studentAttendancePublic', attKey));
+    if (!snap.exists()) return null;
+    return { id: snap.id, ...snap.data() } as StudentAttendancePublicDoc;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `studentAttendancePublic/${attKey}`);
+  }
+}
+
+/**
+ * Silent admin backfill ensuring every approved student has their current-year
+ * /studentAttendancePublic doc synced with their latest batch schedule & attendance.
+ */
+export async function syncApprovedStudentsPublicAttendance(
+  students: StudentRecord[],
+  attendance: AttendanceRecord[],
+  batches: BatchItem[],
+  year: number
+): Promise<void> {
+  const byStudent = new Map<string, AttendanceRecord[]>();
+  for (const r of attendance) {
+    if (!r.attendanceDate.startsWith(`${year}-`)) continue;
+    const arr = byStudent.get(r.studentId) || [];
+    arr.push(r);
+    byStudent.set(r.studentId, arr);
+  }
+
+  for (const stu of students) {
+    if (stu.status !== 'active') continue;
+    const cleanedMobile = cleanPhone(stu.studentMobile);
+    if (cleanedMobile.length !== 10) continue;
+    try {
+      const resolvedBatch = resolveStudentBatch(stu.batch, batches);
+      const attKey = await buildPublicAttendanceKey(stu.studentId, cleanedMobile, year);
+      const stuRecords = byStudent.get(stu.studentId) || [];
+      const existingSnap = await getDoc(doc(db, 'studentAttendancePublic', attKey));
+      if (existingSnap.exists()) {
+        const existingData = existingSnap.data() as StudentAttendancePublicDoc;
+        const existingCount = Object.keys(existingData.records || {}).length;
+        if (
+          existingCount === stuRecords.length &&
+          existingData.batchId === resolvedBatch.batchId &&
+          JSON.stringify(existingData.scheduledDays || []) ===
+            JSON.stringify(resolvedBatch.scheduledDays)
+        ) {
+          continue;
+        }
+      }
+
+      const records: Record<string, StudentAttendanceDayEntry> = {};
+      for (const r of stuRecords) {
+        records[r.attendanceDate] = {
+          status: r.attendanceStatus,
+          entryTimeMs: toEpochMs(r.entryTime),
+          exitTimeMs: toEpochMs(r.exitTime),
+          batchTiming: r.batchTiming || resolvedBatch.batchTiming,
+        };
+      }
+
+      await setDoc(doc(db, 'studentAttendancePublic', attKey), {
+        studentId: stu.studentId,
+        year,
+        batchId: resolvedBatch.batchId,
+        batchTiming: resolvedBatch.batchTiming,
+        enrolledDate: formatIstDateYmd(stu.approvedAt) || '',
+        scheduledDays: resolvedBatch.scheduledDays,
+        records,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (err) {
+      console.warn(`Attendance public sync skipped for ${stu.studentId}:`, err);
+    }
+  }
+}
+

@@ -172,3 +172,56 @@ export async function resolveMediaSource(
     return '';
   }
 }
+
+/**
+ * Generates a compact passport photo JPEG data URL (<= 140KB) suitable for
+ * the OTP-verified student tracking profile & Digital ID Card download.
+ */
+export async function compressPassportThumbnail(file: File): Promise<string> {
+  if (!file.type.startsWith('image/')) return '';
+  try {
+    const { dataUrl } = await compressImageFile(file, 220, 0.72);
+    if (dataUrl.length <= 160000) return dataUrl;
+    const smaller = await compressImageFile(file, 160, 0.62);
+    return smaller.dataUrl.length <= 200000 ? smaller.dataUrl : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Re-compresses an existing image data URL down to <= 160KB so older approved
+ * applications can backfill studentTrackingProfiles cleanly.
+ */
+export async function shrinkImageDataUrlForProfile(sourceDataUrl: string): Promise<string> {
+  if (!sourceDataUrl || !sourceDataUrl.startsWith('data:image/')) return '';
+  if (sourceDataUrl.length <= 150000) return sourceDataUrl;
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Image decode failed'));
+      el.src = sourceDataUrl;
+    });
+    const maxW = 220;
+    let w = img.naturalWidth || img.width;
+    let h = img.naturalHeight || img.height;
+    if (w > maxW) {
+      const ratio = maxW / w;
+      w = Math.round(w * ratio);
+      h = Math.round(h * ratio);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+    const out = canvas.toDataURL('image/jpeg', 0.7);
+    return out.length <= 200000 ? out : '';
+  } catch {
+    return '';
+  }
+}

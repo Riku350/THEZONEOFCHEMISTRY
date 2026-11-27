@@ -9,6 +9,12 @@
 6. **Strict Schema Enforcement**: Every write is guarded by an entity-specific `isValid*` helper checking `keys().hasAll(...)`, `keys().hasOnly(...)`, exact types, numeric ranges, enum domains, regex patterns, and `.size()` upper bounds on all strings.
 7. **Path Variable Hardening**: Every single-document operation (`get`, `create`, `update`, `delete`) validates its path ID via `isValidId(id)` (`^[a-zA-Z0-9_\-]+$`, length <= 128).
 8. **Unique 4-Digit Security Codes**: Active student 4-digit codes are reserved in `/securityCodes/{code}` by admin transactions only.
+9. **Non-PII Tracking Index**: `/trackingIndex/{lookupHash}` stores only SHA-256 keyed lookup entries (`applicationNumber`, `course`, `admissionStage`, `hasStudentId`, `maskedMobile`, `mobileHash`) with bounded array size <= 10, zero student PII, and no public `list` access.
+10. **OTP-Gated Student Tracking Profile**: `/studentTrackingProfiles/{profileKey}` is keyed by `prof_<SHA-256(applicationNumber:mobile)>`, never publicly listable, contains zero private documents/address/parent mobiles, and is retrieved only after server-verified OTP confirmation of the registered mobile number.
+11. **Authoritative QR & Manual Attendance**: `/attendance/{attendanceId}` is admin-only for reads and writes, uses deterministic ID `att_<studentId>_<batchId>_<YYYY-MM-DD>` to prevent duplicate daily records per student/batch, enforces `exists(/students/<studentId>)`, enforces `status == 'active'` for QR attendance, and locks `createdAt`, `updatedAt`, and QR `entryTime`/`exitTime` strictly to `request.time`.
+12. **Immutable Attendance Audit Trail**: `/attendanceAuditLogs/{logId}` is admin-only create/read and permanently immutable (`allow update, delete: if false;`), enforcing mandatory `reason` (3–400 chars) and `modifiedAt == request.time`.
+13. **Public Non-PII Holiday Calendar**: `/attendanceHolidays/{holidayId}` stores only non-PII holiday and not-scheduled class date overrides (admin write only, public read) so student calendars accurately exclude holidays/non-scheduled dates from absence totals.
+14. **OTP-Gated Yearly Student Attendance Ledger**: `/studentAttendancePublic/{attendanceKey}` is keyed by `attpub_<SHA-256(studentId:mobile)>_<year>`, allows single-document `get` only (never public `list`), is admin-written only, and is fetched exclusively after server-verified OTP confirmation.
 
 ## 2. The "Dirty Dozen" Adversarial Payloads
 1. **Self-Approved Application**: Public applicant submits `/applications/ZOC2026-9999` with `status: "approved"`. Expected: `PERMISSION_DENIED`.
@@ -22,4 +28,11 @@
 9. **Path ID Poisoning**: Attacker writes document with 200-character ID or invalid characters (`../etc/passwd`). Expected: `PERMISSION_DENIED`.
 10. **Denial-of-Wallet Oversized String**: Applicant submits 50KB `studentName` string. Expected: `PERMISSION_DENIED`.
 11. **Backdated Timestamp Forgery**: Applicant or admin supplies a past timestamp instead of `request.time` for `submittedAt`. Expected: `PERMISSION_DENIED`.
-12. **Public Status Enumeration**: Unauthenticated visitor runs `list` on `/applicationStatus`. Expected: `PERMISSION_DENIED`.
+12. **Public Status Enumeration**: Unauthenticated visitor runs `list` on `/applicationStatus`, `/trackingIndex`, or `/studentTrackingProfiles`. Expected: `PERMISSION_DENIED`.
+13. **Forged Tracking Profile Approval**: Unauthenticated caller creates `/studentTrackingProfiles/{profileKey}` with `status: "approved"` or `studentId: "ZOC-2026-999999"`. Expected: `PERMISSION_DENIED`.
+14. **Tracking Index Overwrite / Poisoning**: Unauthenticated caller updates `/trackingIndex/mob_<hash>` to modify `mobileHash` or remove existing entries. Expected: `PERMISSION_DENIED`.
+15. **Self-Marked Attendance Forgery**: Unauthenticated or non-admin user attempts to create `/attendance/{attendanceId}` with `attendanceStatus: "Present"`. Expected: `PERMISSION_DENIED`.
+16. **Suspended Student QR Attendance**: Admin client attempts QR attendance (`source: "qr"`) for a student whose `/students/{studentId}` has `status == "suspended"`. Expected: `PERMISSION_DENIED`.
+17. **Audit Log Deletion / Tampering**: Even an authenticated admin attempts `update` or `delete` on `/attendanceAuditLogs/{logId}`. Expected: `PERMISSION_DENIED`.
+18. **Public Attendance Enumeration**: Unauthenticated visitor runs `list` on `/attendance` or `/studentAttendancePublic`. Expected: `PERMISSION_DENIED`.
+

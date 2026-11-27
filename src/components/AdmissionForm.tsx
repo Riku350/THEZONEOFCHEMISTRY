@@ -210,6 +210,7 @@ export const AdmissionForm: React.FC<AdmissionFormProps> = ({
         batch,
         feeAmount: effectiveFee,
         declarationAccepted,
+        academicSession: settings.academicSession,
         photoFile,
         idProofFile,
         marksheetFile,

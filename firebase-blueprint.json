@@ -205,6 +205,8 @@
         "timing": { "type": "string", "minLength": 2, "maxLength": 80 },
         "capacity": { "type": "number" },
         "feeOverride": { "type": "number" },
+        "scheduledDays": { "type": "array", "description": "Bounded weekday list (0=Sun..6=Sat, max 7) when this batch holds classes." },
+        "scheduleStartDate": { "type": "string", "maxLength": 10, "pattern": "^([0-9]{4}-[0-9]{2}-[0-9]{2})?$" },
         "active": { "type": "boolean" },
         "order": { "type": "number" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -340,6 +342,7 @@
         "email": { "type": "string", "maxLength": 160 },
         "address": { "type": "string", "maxLength": 300 },
         "signatureText": { "type": "string", "maxLength": 80 },
+        "attendanceExitTracking": { "type": "boolean" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["instituteName", "teacherName", "defaultFee", "admissionsOpen", "updatedAt"]
@@ -355,6 +358,162 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["dataUrl", "mimeType", "createdAt"]
+    },
+    "TrackingIndex": {
+      "title": "TrackingIndex",
+      "description": "Non-PII SHA-256 keyed lookup index for Track My Admission by Student ID/Application Number or Registered Mobile Number.",
+      "type": "object",
+      "properties": {
+        "lookupType": { "type": "string", "enum": ["id", "mobile"] },
+        "maskedMobile": { "type": "string", "minLength": 4, "maxLength": 20 },
+        "mobileHash": { "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[a-f0-9]{64}$" },
+        "entries": { "type": "array", "description": "Bounded list (max 10) of non-PII application summaries (applicationNumber, course, admissionStage, hasStudentId)." },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["lookupType", "maskedMobile", "mobileHash", "entries", "updatedAt"]
+    },
+    "StudentTrackingProfile": {
+      "title": "StudentTrackingProfile",
+      "description": "OTP-gated student profile and digital ID card payload keyed by SHA-256(applicationNumber:mobile).",
+      "type": "object",
+      "properties": {
+        "applicationNumber": { "type": "string", "minLength": 4, "maxLength": 40, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "studentId": { "type": "string", "maxLength": 64 },
+        "studentName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "fatherName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "studentClass": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "course": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "batch": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "academicSession": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "admissionStage": { "type": "string", "enum": ["Application Submitted", "Under Review", "Approved", "Rejected", "Student ID Generated"] },
+        "studentStatus": { "type": "string", "enum": ["", "active", "suspended"] },
+        "feeAmount": { "type": "number" },
+        "paidAmount": { "type": "number" },
+        "paymentStatus": { "type": "string", "enum": ["PENDING", "PARTIAL", "PAID"] },
+        "securityCode": { "type": "string", "maxLength": 4 },
+        "qrToken": { "type": "string", "maxLength": 120 },
+        "photoUrl": { "type": "string", "maxLength": 2000 },
+        "photoDataUrl": { "type": "string", "maxLength": 250000 },
+        "remarks": { "type": "string", "maxLength": 500 },
+        "submittedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "applicationNumber",
+        "studentName",
+        "fatherName",
+        "studentClass",
+        "course",
+        "batch",
+        "academicSession",
+        "status",
+        "admissionStage",
+        "feeAmount",
+        "paidAmount",
+        "paymentStatus",
+        "submittedAt",
+        "updatedAt"
+      ]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Single authoritative student attendance record per student per batch per IST date.",
+      "type": "object",
+      "properties": {
+        "attendanceId": { "type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "studentId": { "type": "string", "minLength": 4, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "studentName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "batchId": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "batchTiming": { "type": "string", "maxLength": 80 },
+        "class": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "course": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "attendanceDate": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "entryTime": { "type": "string", "format": "date-time" },
+        "exitTime": { "type": "string", "format": "date-time" },
+        "attendanceStatus": { "type": "string", "enum": ["Present", "Absent"] },
+        "source": { "type": "string", "enum": ["qr", "manual"] },
+        "recordedBy": { "type": "string", "minLength": 2, "maxLength": 200 },
+        "lastModifiedBy": { "type": "string", "maxLength": 200 },
+        "correctionReason": { "type": "string", "maxLength": 400 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "attendanceId",
+        "studentId",
+        "studentName",
+        "batchId",
+        "class",
+        "course",
+        "attendanceDate",
+        "attendanceStatus",
+        "source",
+        "recordedBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AttendanceAuditLog": {
+      "title": "AttendanceAuditLog",
+      "description": "Immutable audit log recording every manual attendance entry or correction by teachers/admins.",
+      "type": "object",
+      "properties": {
+        "logId": { "type": "string", "minLength": 4, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "attendanceId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "studentId": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "studentName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "batchId": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "attendanceDate": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "previousStatus": { "type": "string", "enum": ["Present", "Absent", "None"] },
+        "newStatus": { "type": "string", "enum": ["Present", "Absent"] },
+        "reason": { "type": "string", "minLength": 3, "maxLength": 400 },
+        "modifiedBy": { "type": "string", "minLength": 2, "maxLength": 200 },
+        "modifiedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "logId",
+        "attendanceId",
+        "studentId",
+        "studentName",
+        "batchId",
+        "attendanceDate",
+        "previousStatus",
+        "newStatus",
+        "reason",
+        "modifiedBy",
+        "modifiedAt"
+      ]
+    },
+    "AttendanceHoliday": {
+      "title": "AttendanceHoliday",
+      "description": "Official holiday or non-scheduled class date override so non-class days are never counted as absences.",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "title": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "batchId": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "dayType": { "type": "string", "enum": ["Holiday", "NotScheduled"] },
+        "createdBy": { "type": "string", "minLength": 2, "maxLength": 200 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["date", "title", "batchId", "dayType", "createdBy", "createdAt"]
+    },
+    "StudentAttendancePublic": {
+      "title": "StudentAttendancePublic",
+      "description": "OTP-gated yearly attendance ledger keyed by SHA-256(studentId:mobile)_year for zero-login student attendance tracking.",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "year": { "type": "number" },
+        "batchId": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "batchTiming": { "type": "string", "maxLength": 80 },
+        "enrolledDate": { "type": "string", "maxLength": 10 },
+        "scheduledDays": { "type": "array", "description": "Bounded weekday list (0..6, max 7) for the student's batch." },
+        "records": { "type": "object", "description": "Map of YYYY-MM-DD -> { status, entryTimeMs, exitTimeMs, batchTiming } for the given year." },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["studentId", "year", "batchId", "batchTiming", "scheduledDays", "records", "updatedAt"]
     }
   },
   "firestore": {
@@ -421,6 +580,30 @@
     "/publicMedia/{mediaId}": {
       "schema": { "$ref": "#/entities/MediaBlob" },
       "description": "Public banner and gallery images."
+    },
+    "/trackingIndex/{lookupHash}": {
+      "schema": { "$ref": "#/entities/TrackingIndex" },
+      "description": "Non-PII SHA-256 lookup index for Track My Admission (no student PII exposed)."
+    },
+    "/studentTrackingProfiles/{profileKey}": {
+      "schema": { "$ref": "#/entities/StudentTrackingProfile" },
+      "description": "OTP-verified student official profile and ID card data keyed by SHA-256(applicationNumber:mobile)."
+    },
+    "/attendance/{attendanceId}": {
+      "schema": { "$ref": "#/entities/AttendanceRecord" },
+      "description": "Authoritative student attendance records keyed deterministically by att_studentId_batchId_YYYY-MM-DD."
+    },
+    "/attendanceAuditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AttendanceAuditLog" },
+      "description": "Immutable audit log of manual attendance corrections."
+    },
+    "/attendanceHolidays/{holidayId}": {
+      "schema": { "$ref": "#/entities/AttendanceHoliday" },
+      "description": "Institute-wide or batch-specific holidays and non-scheduled class date overrides."
+    },
+    "/studentAttendancePublic/{attendanceKey}": {
+      "schema": { "$ref": "#/entities/StudentAttendancePublic" },
+      "description": "OTP-gated yearly student attendance ledger keyed by attpub_sha256(studentId:mobile)_year."
     }
   }
 }

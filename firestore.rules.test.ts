@@ -140,5 +140,78 @@ export const DIRTY_DOZEN_CASES: AdversarialPayloadCase[] = [
     auth: null,
     expectedResult: 'PERMISSION_DENIED',
     enforcedBy: 'allow list: if isAdmin()'
+  },
+  {
+    id: 13,
+    name: 'Public Tracking Profile Enumeration',
+    collection: 'studentTrackingProfiles',
+    operation: 'list',
+    auth: null,
+    expectedResult: 'PERMISSION_DENIED',
+    enforcedBy: 'allow list: if isAdmin()'
+  },
+  {
+    id: 14,
+    name: 'Forged Approved Student Tracking Profile',
+    collection: 'studentTrackingProfiles',
+    operation: 'create',
+    auth: null,
+    docId: 'prof_forged123456',
+    payload: { status: 'approved', admissionStage: 'Student ID Generated', studentId: 'ZOC-2026-999999' },
+    expectedResult: 'PERMISSION_DENIED',
+    enforcedBy: 'incoming().status == "pending" && incoming().admissionStage == "Application Submitted"'
+  },
+  {
+    id: 15,
+    name: 'Tracking Index Tampering',
+    collection: 'trackingIndex',
+    operation: 'update',
+    auth: null,
+    docId: 'mob_abc123',
+    payload: { mobileHash: '0'.repeat(64), entries: [] },
+    expectedResult: 'PERMISSION_DENIED',
+    enforcedBy: 'affectedKeys().hasOnly(["entries", "updatedAt"]) && incoming().entries.size() == existing().entries.size() + 1'
+  },
+  {
+    id: 16,
+    name: 'Self-Marked Attendance Forgery',
+    collection: 'attendance',
+    operation: 'create',
+    auth: null,
+    docId: 'att_ZOC-2026-1001_batch-1_2026-11-27',
+    payload: { studentId: 'ZOC-2026-1001', attendanceStatus: 'Present', source: 'qr' },
+    expectedResult: 'PERMISSION_DENIED',
+    enforcedBy: 'allow create: if isAdmin() && ...'
+  },
+  {
+    id: 17,
+    name: 'Suspended Student QR Attendance',
+    collection: 'attendance',
+    operation: 'create',
+    auth: { uid: 'owner-uid', email: 'rikudatabackup@gmail.com', email_verified: true },
+    docId: 'att_ZOC-2026-SUSP_batch-1_2026-11-27',
+    payload: { studentId: 'ZOC-2026-SUSP', attendanceStatus: 'Present', source: 'qr' },
+    expectedResult: 'PERMISSION_DENIED',
+    enforcedBy: 'get(/databases/$(database)/documents/students/$(incoming().studentId)).data.status == "active"'
+  },
+  {
+    id: 18,
+    name: 'Attendance Audit Log Tampering',
+    collection: 'attendanceAuditLogs',
+    operation: 'delete',
+    auth: { uid: 'owner-uid', email: 'rikudatabackup@gmail.com', email_verified: true },
+    docId: 'log_123456',
+    expectedResult: 'PERMISSION_DENIED',
+    enforcedBy: 'allow update, delete: if false'
+  },
+  {
+    id: 19,
+    name: 'Public Attendance Ledger Enumeration',
+    collection: 'studentAttendancePublic',
+    operation: 'list',
+    auth: null,
+    expectedResult: 'PERMISSION_DENIED',
+    enforcedBy: 'allow list: if isAdmin()'
   }
 ];
+
