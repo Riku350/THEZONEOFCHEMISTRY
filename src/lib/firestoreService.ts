@@ -384,7 +384,6 @@ export interface AdmissionSubmissionInput {
   fatherMobile: string;
   motherName: string;
   motherMobile: string;
-  dob: string;
   gender: Gender;
   address: string;
   village: string;
@@ -440,7 +439,6 @@ export async function submitAdmissionApplication(
     fatherMobile: cleanPhone(input.fatherMobile),
     motherName: input.motherName.trim().slice(0, 120),
     motherMobile: cleanPhone(input.motherMobile),
-    dob: input.dob.trim().slice(0, 20),
     gender: input.gender,
     address: input.address.trim().slice(0, 400),
     village: input.village.trim().slice(0, 120),
@@ -1050,7 +1048,7 @@ export async function approveApplicationAndCreateStudent(
           fatherMobile: application.fatherMobile || '',
           motherName: application.motherName || '',
           motherMobile: application.motherMobile || '',
-          dob: application.dob || '',
+          ...(application.dob ? { dob: application.dob } : {}),
           gender: application.gender || 'Other',
           address: application.address || '',
           village: application.village || '',
@@ -1969,6 +1967,28 @@ export async function deleteCourse(id: string): Promise<void> {
   }
 }
 
+export function sanitizeHttpsUrl(raw?: string): string {
+  const val = (raw || '').trim().slice(0, 400);
+  if (!val) return '';
+  if (/^https:\/\/[a-zA-Z0-9._~:/?#[\]@!$&'()*+,;=%-]+$/.test(val)) {
+    return val;
+  }
+  return '';
+}
+
+export async function uploadBatchLogo(file: File | Blob, fileName?: string): Promise<{ url: string; mediaId: string }> {
+  return uploadMediaSmart(file, 'batch_logos', false, 512, true, fileName);
+}
+
+export async function uploadBrandingAsset(
+  file: File | Blob,
+  kind: 'main_logo' | 'app_logo' | 'favicon',
+  fileName?: string
+): Promise<{ url: string; mediaId: string }> {
+  const maxDim = kind === 'favicon' ? 256 : 512;
+  return uploadMediaSmart(file, `branding_${kind}`, false, maxDim, true, fileName);
+}
+
 export async function saveBatch(
   batchItem: Omit<BatchItem, 'id' | 'updatedAt'> & { id?: string }
 ): Promise<void> {
@@ -1988,6 +2008,8 @@ export async function saveBatch(
     await setDoc(doc(db, 'batches', id), {
       name: batchItem.name.trim().slice(0, 80),
       timing: batchItem.timing.trim().slice(0, 80),
+      className: (batchItem.className || '').trim().slice(0, 60),
+      courseName: (batchItem.courseName || '').trim().slice(0, 100),
       capacity: Math.max(1, Number(batchItem.capacity) || 60),
       feeOverride:
         batchItem.feeOverride !== null &&
@@ -1997,6 +2019,12 @@ export async function saveBatch(
           : null,
       scheduledDays: cleanScheduledDays,
       scheduleStartDate: cleanStartDate,
+      instagramUrl: sanitizeHttpsUrl(batchItem.instagramUrl),
+      telegramUrl: sanitizeHttpsUrl(batchItem.telegramUrl),
+      whatsappUrl: sanitizeHttpsUrl(batchItem.whatsappUrl),
+      socialLinksActive: batchItem.socialLinksActive !== false,
+      logoUrl: (batchItem.logoUrl || '').trim().slice(0, 2000),
+      logoMediaId: (batchItem.logoMediaId || '').trim().slice(0, 128),
       active: Boolean(batchItem.active),
       order: Number(batchItem.order) || 1,
       updatedAt: serverTimestamp(),
@@ -2095,6 +2123,17 @@ export async function saveInstituteSettings(
       teacherWhatsappNumber: (settings.teacherWhatsappNumber || '').trim().slice(0, 30),
       teacherEmail: (settings.teacherEmail || '').trim().slice(0, 160),
       idCardMotivationalMessage: (settings.idCardMotivationalMessage || '').trim().slice(0, 600),
+      instagramUrl: sanitizeHttpsUrl(settings.instagramUrl),
+      telegramChannelUrl: sanitizeHttpsUrl(settings.telegramChannelUrl),
+      telegramGroupUrl: sanitizeHttpsUrl(settings.telegramGroupUrl),
+      whatsappCommunityUrl: sanitizeHttpsUrl(settings.whatsappCommunityUrl),
+      socialLinksActive: settings.socialLinksActive !== false,
+      mainLogoUrl: (settings.mainLogoUrl || '').trim().slice(0, 2000),
+      mainLogoMediaId: (settings.mainLogoMediaId || '').trim().slice(0, 128),
+      appLogoUrl: (settings.appLogoUrl || '').trim().slice(0, 2000),
+      appLogoMediaId: (settings.appLogoMediaId || '').trim().slice(0, 128),
+      faviconUrl: (settings.faviconUrl || '').trim().slice(0, 2000),
+      faviconMediaId: (settings.faviconMediaId || '').trim().slice(0, 128),
       updatedAt: serverTimestamp(),
     });
   } catch (error) {

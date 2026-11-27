@@ -77,7 +77,7 @@ export interface AdmissionApplication {
   fatherMobile: string;
   motherName: string;
   motherMobile: string;
-  dob: string;
+  dob?: string;
   gender: Gender;
   address: string;
   village: string;
@@ -169,10 +169,18 @@ export interface BatchItem {
   id: string;
   name: string;
   timing: string;
+  className?: string;
+  courseName?: string;
   capacity?: number;
   feeOverride?: number | null;
   scheduledDays?: number[]; // 0=Sun..6=Sat
   scheduleStartDate?: string; // YYYY-MM-DD
+  instagramUrl?: string;
+  telegramUrl?: string;
+  whatsappUrl?: string;
+  socialLinksActive?: boolean;
+  logoUrl?: string;
+  logoMediaId?: string;
   active: boolean;
   order: number;
   updatedAt?: TimestampLike | null;
@@ -295,6 +303,17 @@ export interface InstituteSettings {
   teacherWhatsappNumber?: string;
   teacherEmail?: string;
   idCardMotivationalMessage?: string;
+  instagramUrl?: string;
+  telegramChannelUrl?: string;
+  telegramGroupUrl?: string;
+  whatsappCommunityUrl?: string;
+  socialLinksActive?: boolean;
+  mainLogoUrl?: string;
+  mainLogoMediaId?: string;
+  appLogoUrl?: string;
+  appLogoMediaId?: string;
+  faviconUrl?: string;
+  faviconMediaId?: string;
   updatedAt?: TimestampLike | null;
 }
 
@@ -405,6 +424,7 @@ export type AdminTab =
   | 'scanner'
   | 'fees'
   | 'banners'
+  | 'social'
   | 'gallery'
   | 'notices'
   | 'settings';

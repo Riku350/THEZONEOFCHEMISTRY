@@ -1,13 +1,34 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
+import { resolveMediaSource } from '../lib/media';
+import { InstituteSettings } from '../types';
 
 interface IntroScreenProps {
+  settings: InstituteSettings;
   onComplete: () => void;
 }
 
-export const IntroScreen: React.FC<IntroScreenProps> = ({ onComplete }) => {
+export const IntroScreen: React.FC<IntroScreenProps> = ({ settings, onComplete }) => {
   const [progress, setProgress] = useState(0);
   const [exiting, setExiting] = useState(false);
+  const [logoSrc, setLogoSrc] = useState('');
+
+  const brandUrl = settings.appLogoUrl || settings.mainLogoUrl || '';
+  const brandMediaId = settings.appLogoMediaId || settings.mainLogoMediaId || '';
+
+  useEffect(() => {
+    let active = true;
+    if (!brandUrl && !brandMediaId) {
+      setLogoSrc('');
+      return;
+    }
+    void resolveMediaSource(brandUrl, brandMediaId, false).then((src) => {
+      if (active) setLogoSrc(src || '');
+    });
+    return () => {
+      active = false;
+    };
+  }, [brandUrl, brandMediaId]);
 
   useEffect(() => {
     const duration = 2200;
@@ -44,44 +65,54 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onComplete }) => {
       className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-white px-6 select-none"
     >
       <div className="flex flex-col items-center text-center max-w-sm w-full">
-        {/* Simple Animated Chemistry Molecule Logo */}
+        {/* Uploaded Institute/App Logo or Animated Chemistry Molecule Fallback */}
         <motion.div
           initial={{ scale: 0.88, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
           className="mb-6"
         >
-          <motion.svg
-            viewBox="0 0 88 88"
-            className="w-16 h-16"
-            animate={{ rotate: 360 }}
-            transition={{ duration: 16, ease: 'linear', repeat: Infinity }}
-            aria-hidden="true"
-          >
-            {/* Outer Benzene Hexagon */}
-            <polygon
-              points="44,10 73,27 73,61 44,78 15,61 15,27"
-              fill="#F5F3FF"
-              stroke="#7C3AED"
-              strokeWidth="2.5"
-              strokeLinejoin="round"
-            />
-            {/* Inner Resonance Ring */}
-            <circle
-              cx="44"
-              cy="44"
-              r="16"
-              fill="none"
-              stroke="#8B5CF6"
-              strokeWidth="1.8"
-              strokeDasharray="5 4"
-            />
-            {/* Molecular Nodes */}
-            <circle cx="44" cy="10" r="4" fill="#6D28D9" />
-            <circle cx="73" cy="61" r="4" fill="#7C3AED" />
-            <circle cx="15" cy="61" r="4" fill="#8B5CF6" />
-            <circle cx="44" cy="44" r="3.5" fill="#6D28D9" />
-          </motion.svg>
+          {logoSrc ? (
+            <div className="w-20 h-20 rounded-2xl bg-white border border-violet-100 shadow-sm p-2.5 flex items-center justify-center overflow-hidden">
+              <img
+                src={logoSrc}
+                alt={settings.instituteName || 'THE ZONE OF CHEMISTRY'}
+                className="w-full h-full object-contain"
+              />
+            </div>
+          ) : (
+            <motion.svg
+              viewBox="0 0 88 88"
+              className="w-16 h-16"
+              animate={{ rotate: 360 }}
+              transition={{ duration: 16, ease: 'linear', repeat: Infinity }}
+              aria-hidden="true"
+            >
+              {/* Outer Benzene Hexagon */}
+              <polygon
+                points="44,10 73,27 73,61 44,78 15,61 15,27"
+                fill="#F5F3FF"
+                stroke="#7C3AED"
+                strokeWidth="2.5"
+                strokeLinejoin="round"
+              />
+              {/* Inner Resonance Ring */}
+              <circle
+                cx="44"
+                cy="44"
+                r="16"
+                fill="none"
+                stroke="#8B5CF6"
+                strokeWidth="1.8"
+                strokeDasharray="5 4"
+              />
+              {/* Molecular Nodes */}
+              <circle cx="44" cy="10" r="4" fill="#6D28D9" />
+              <circle cx="73" cy="61" r="4" fill="#7C3AED" />
+              <circle cx="15" cy="61" r="4" fill="#8B5CF6" />
+              <circle cx="44" cy="44" r="3.5" fill="#6D28D9" />
+            </motion.svg>
+          )}
         </motion.div>
 
         {/* Subtle Fade-In Title & Teacher */}
@@ -91,7 +122,7 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onComplete }) => {
           transition={{ duration: 0.45, delay: 0.15, ease: [0.16, 1, 0.3, 1] }}
           className="font-display text-xl sm:text-2xl font-bold tracking-tight text-gray-900"
         >
-          THE ZONE OF CHEMISTRY
+          {settings.instituteName || 'THE ZONE OF CHEMISTRY'}
         </motion.h1>
 
         <motion.p
@@ -100,7 +131,7 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onComplete }) => {
           transition={{ duration: 0.45, delay: 0.35, ease: [0.16, 1, 0.3, 1] }}
           className="mt-1.5 text-sm font-semibold text-violet-700"
         >
-          SONU SIR #BABA
+          {settings.teacherName || 'SONU SIR #BABA'}
         </motion.p>
 
         {/* Small Minimal Loading Indicator */}

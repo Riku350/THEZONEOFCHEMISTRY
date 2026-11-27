@@ -56,6 +56,17 @@ export const DEFAULT_SETTINGS: InstituteSettings = {
   teacherWhatsappNumber: '',
   teacherEmail: '',
   idCardMotivationalMessage: DEFAULT_ID_CARD_MOTIVATIONAL_MESSAGE,
+  instagramUrl: '',
+  telegramChannelUrl: '',
+  telegramGroupUrl: '',
+  whatsappCommunityUrl: '',
+  socialLinksActive: true,
+  mainLogoUrl: '',
+  mainLogoMediaId: '',
+  appLogoUrl: '',
+  appLogoMediaId: '',
+  faviconUrl: '',
+  faviconMediaId: '',
 };
 
 export const DEFAULT_COURSES: CourseItem[] = [

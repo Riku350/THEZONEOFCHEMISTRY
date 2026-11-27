@@ -162,6 +162,7 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
       studentId: activeStudent.studentId,
       year: selectedYear,
       reportToken: activeStudent.reportToken,
+      legacyMobile: activeStudent._legacyMobile,
     })
       .then((res) => {
         if (cancelled) return;
@@ -186,6 +187,7 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
   }, [
     activeStudent?.studentId,
     activeStudent?.reportToken,
+    activeStudent?._legacyMobile,
     selectedYear,
     attendanceReloadSeq,
     loadedDocKey,

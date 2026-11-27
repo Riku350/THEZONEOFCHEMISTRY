@@ -25,6 +25,7 @@ import {
   fetchPublicInstituteData,
   PublicInstituteData,
 } from './lib/firestoreService';
+import { resolveMediaSource } from './lib/media';
 import { PublicView } from './types';
 
 export default function App() {
@@ -58,6 +59,46 @@ export default function App() {
   useEffect(() => {
     void loadPublicData();
   }, [loadPublicData]);
+
+  // Dynamically sync document title & browser favicon with Website Branding settings
+  useEffect(() => {
+    const s = publicData.settings;
+    if (s.instituteName) {
+      document.title = s.teacherName ? `${s.instituteName} | ${s.teacherName}` : s.instituteName;
+    }
+
+    const favUrl = s.faviconUrl || s.appLogoUrl || s.mainLogoUrl || '';
+    const favMediaId = s.faviconMediaId || s.appLogoMediaId || s.mainLogoMediaId || '';
+    if (!favUrl && !favMediaId) return;
+
+    let active = true;
+    void resolveMediaSource(favUrl, favMediaId, false).then((resolved) => {
+      if (!active || !resolved) return;
+      const upsertLink = (rel: string) => {
+        let link = document.querySelector<HTMLLinkElement>(`link[rel="${rel}"]`);
+        if (!link) {
+          link = document.createElement('link');
+          link.rel = rel;
+          document.head.appendChild(link);
+        }
+        link.href = resolved;
+      };
+      upsertLink('icon');
+      upsertLink('apple-touch-icon');
+    });
+    return () => {
+      active = false;
+    };
+  }, [
+    publicData.settings.instituteName,
+    publicData.settings.teacherName,
+    publicData.settings.faviconUrl,
+    publicData.settings.faviconMediaId,
+    publicData.settings.appLogoUrl,
+    publicData.settings.appLogoMediaId,
+    publicData.settings.mainLogoUrl,
+    publicData.settings.mainLogoMediaId,
+  ]);
 
   useEffect(() => {
     if (!isFirebaseConfigured) {
@@ -118,7 +159,9 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      {showIntro && <IntroScreen onComplete={() => setShowIntro(false)} />}
+      {showIntro && (
+        <IntroScreen settings={publicData.settings} onComplete={() => setShowIntro(false)} />
+      )}
 
       {view === 'admin' && authReady && user && isAuthorizedAdmin ? (
         <AdminDashboard
@@ -130,7 +173,7 @@ export default function App() {
         <div className="min-h-screen bg-white text-gray-900 flex flex-col">
           <Navbar
             currentView={view}
-            instituteName={publicData.settings.instituteName}
+            settings={publicData.settings}
             onNavigate={handleNavigate}
           />
 

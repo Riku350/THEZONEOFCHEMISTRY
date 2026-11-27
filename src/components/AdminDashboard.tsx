@@ -19,6 +19,7 @@ import {
   Image as ImageIcon,
   LayoutDashboard,
   LayoutTemplate,
+  Link2,
   Loader2,
   LogOut,
   MoreHorizontal,
@@ -79,6 +80,8 @@ import {
 } from './AdminCmsManager';
 import { AdminFeeManager } from './AdminFeeManager';
 import { AdminQrScanner } from './AdminQrScanner';
+import { AdminSocialLinksPanel } from './AdminSocialLinksPanel';
+import { BrandLogo } from './BrandLogo';
 import { DigitalIdCardModal } from './DigitalIdCardModal';
 import { ResolvedImage } from './ResolvedImage';
 
@@ -97,7 +100,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onPublicDataChanged,
 }) => {
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
-  const [settingsSubTab, setSettingsSubTab] = useState<'general' | 'idcard'>('general');
+  const [settingsSubTab, setSettingsSubTab] = useState<'general' | 'branding' | 'idcard'>('general');
   const [moreSheetOpen, setMoreSheetOpen] = useState(false);
 
   // Live Firestore collections
@@ -417,12 +420,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     { id: 'scanner', label: 'QR Scanner', icon: <QrCode className="w-4 h-4" /> },
     { id: 'fees', label: 'Fees', icon: <CreditCard className="w-4 h-4" /> },
     { id: 'banners', label: 'Homepage Banners', icon: <LayoutTemplate className="w-4 h-4" /> },
+    { id: 'social', label: 'Social & Batch Links', icon: <Link2 className="w-4 h-4" /> },
     { id: 'gallery', label: 'Gallery', icon: <ImageIcon className="w-4 h-4" /> },
     { id: 'notices', label: 'Notices & Courses', icon: <Bell className="w-4 h-4" /> },
     { id: 'settings', label: 'Settings', icon: <Settings className="w-4 h-4" /> },
   ];
 
-  const moreMenuTabs: AdminTab[] = ['students', 'fees', 'banners', 'gallery', 'notices', 'settings'];
+  const moreMenuTabs: AdminTab[] = ['students', 'fees', 'banners', 'social', 'gallery', 'notices', 'settings'];
   const isMoreTabActive = moreMenuTabs.includes(activeTab);
 
   const uniqueCourseNames = Array.from(
@@ -449,9 +453,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {/* Desktop White Sidebar */}
       <aside className="no-print hidden lg:flex lg:flex-col w-60 shrink-0 border-r border-gray-200 bg-white sticky top-0 h-screen">
         <div className="px-4 h-14 border-b border-gray-200 flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-xl bg-violet-600 text-white flex items-center justify-center shrink-0">
-            <Atom className="w-4 h-4" />
-          </div>
+          <BrandLogo settings={settings} sizeClass="w-8 h-8" iconSizeClass="w-4 h-4" />
           <div className="min-w-0">
             <p className="font-display text-xs font-bold text-gray-900 truncate">
               {settings.instituteName}
@@ -519,9 +521,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         {/* Compact Top Workspace Bar */}
         <header className="no-print sticky top-0 z-30 h-14 border-b border-gray-200 bg-white/95 backdrop-blur-sm px-4 sm:px-6 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="lg:hidden w-7 h-7 rounded-lg bg-violet-600 text-white flex items-center justify-center shrink-0">
-              <Atom className="w-4 h-4" />
-            </div>
+            <BrandLogo
+              settings={settings}
+              variant="app"
+              sizeClass="w-7 h-7"
+              iconSizeClass="w-3.5 h-3.5"
+              roundedClass="rounded-lg"
+              className="lg:hidden"
+            />
             <span className="text-xs sm:text-sm font-semibold text-gray-900 truncate">
               {currentTabLabel}
             </span>
@@ -1223,6 +1230,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <AdminBannersPanel banners={banners} settings={settings} />
           )}
 
+          {/* TAB 6B: SOCIAL MEDIA & BATCH LINKS */}
+          {activeTab === 'social' && (
+            <AdminSocialLinksPanel settings={settings} batches={batches} courses={courses} />
+          )}
+
           {/* TAB 7: GALLERY MANAGEMENT */}
           {activeTab === 'gallery' && <AdminGalleryPanel gallery={gallery} />}
 
@@ -1605,10 +1617,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <p className="font-mono text-gray-900">{selectedApp.studentWhatsapp}</p>
                     </div>
                     <div>
-                      <p className="text-xs text-gray-500">DOB & Gender</p>
-                      <p className="text-gray-900">
-                        {selectedApp.dob} · {selectedApp.gender}
-                      </p>
+                      <p className="text-xs text-gray-500">Gender</p>
+                      <p className="text-gray-900">{selectedApp.gender}</p>
                     </div>
                     <div>
                       <p className="text-xs text-gray-500">Father</p>

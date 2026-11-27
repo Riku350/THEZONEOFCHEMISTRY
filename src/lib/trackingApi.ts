@@ -1,4 +1,15 @@
-// Shared, fail-closed client helpers for server-side rate-limiting and OTP verification
+// Shared, fail-closed client helpers for server-side rate-limiting, OTP verification,
+// and resilient attendance search (Express backend primary + rules-protected Firestore SDK fail-safe)
+
+import { getClientIstNow } from './attendanceUtils';
+import {
+  fetchPublicAttendanceHolidays,
+  fetchStudentAttendanceById,
+  lookupActiveStudentsForAttendanceById,
+  lookupActiveStudentsForAttendanceByMobile,
+  normalizeIndianMobile,
+  normalizeStudentId,
+} from './firestoreService';
 
 export type RateLimitResult =
   | { ok: true; remaining: number }
@@ -32,6 +43,50 @@ export type OtpVerifyResult =
       message: string;
     };
 
+const FALLBACK_WINDOW_MS = 5 * 60 * 1000;
+const FALLBACK_SEARCH_MAX = 30;
+const FALLBACK_REPORT_MAX = 60;
+const fallbackBuckets = new Map<string, number[]>();
+
+function checkFallbackRateLimit(
+  bucketKey: string,
+  maxAllowed: number
+): { allowed: true } | { allowed: false; retryAfterSeconds: number } {
+  const now = Date.now();
+  const cutoff = now - FALLBACK_WINDOW_MS;
+  let recent = (fallbackBuckets.get(bucketKey) || []).filter((ts) => ts > cutoff);
+
+  try {
+    const storageKey = `zoc_rl_${bucketKey}`;
+    const raw = window.sessionStorage.getItem(storageKey);
+    if (raw) {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) {
+        const stored = parsed.filter((n): n is number => typeof n === 'number' && n > cutoff);
+        if (stored.length > recent.length) recent = stored;
+      }
+    }
+  } catch {
+    // Ignore storage restriction in sandboxed iframes
+  }
+
+  if (recent.length >= maxAllowed) {
+    fallbackBuckets.set(bucketKey, recent);
+    const oldest = recent[0];
+    const retryAfterSeconds = Math.max(1, Math.ceil((oldest + FALLBACK_WINDOW_MS - now) / 1000));
+    return { allowed: false, retryAfterSeconds };
+  }
+
+  recent.push(now);
+  fallbackBuckets.set(bucketKey, recent);
+  try {
+    window.sessionStorage.setItem(`zoc_rl_${bucketKey}`, JSON.stringify(recent));
+  } catch {
+    // Ignore storage quota errors
+  }
+  return { allowed: true };
+}
+
 async function fetchJsonWithTimeout(
   url: string,
   init: RequestInit,
@@ -42,7 +97,7 @@ async function fetchJsonWithTimeout(
   try {
     const response = await fetch(url, {
       ...init,
-      credentials: 'same-origin',
+      credentials: 'include',
       cache: 'no-store',
       signal: controller.signal,
       headers: {
@@ -289,6 +344,8 @@ export interface AttendanceSearchStudentDto {
   enrolledDate?: string;
   attendanceKeyHash: string;
   reportToken?: string;
+  /** Non-persisted client-only fallback for static/shared host year-switch ledger lookups */
+  _legacyMobile?: string;
 }
 
 export interface AttendanceSearchHolidayDto {
@@ -351,6 +408,151 @@ export type AttendanceSearchApiResult =
       message: string;
     };
 
+/**
+ * Direct rules-protected Firestore Web SDK lookup used ONLY as a resilient fail-safe
+ * when the Express /api/* proxy is unmounted (e.g., static shared hosting 404/302 HTML)
+ * or temporarily restarting. Enforces the exact same input validation, SHA-256 hashed
+ * lookup collections, approved-and-active filtering, and sliding-window rate limit.
+ */
+async function fallbackDirectFirestoreAttendanceSearch(params: {
+  mode: 'mobile' | 'id';
+  query: string;
+  year?: number;
+}): Promise<AttendanceSearchApiResult> {
+  const ist = getClientIstNow();
+  const targetYear =
+    typeof params.year === 'number' &&
+    Number.isInteger(params.year) &&
+    params.year >= 2020 &&
+    params.year <= 2100
+      ? params.year
+      : ist.year;
+
+  let normalizedMobile = '';
+  let normalizedId = '';
+
+  if (params.mode === 'mobile') {
+    const check = normalizeIndianMobile(params.query);
+    if (!check.ok) {
+      return { ok: false, code: 'INVALID_MOBILE', message: check.error };
+    }
+    normalizedMobile = check.mobile10;
+  } else {
+    const check = normalizeStudentId(params.query);
+    if (!check.ok) {
+      return {
+        ok: false,
+        code: check.isApplicationNumber
+          ? 'APPLICATION_NUMBER_NOT_STUDENT_ID'
+          : 'INVALID_STUDENT_ID',
+        message: check.error,
+      };
+    }
+    normalizedId = check.studentId;
+  }
+
+  const rl = checkFallbackRateLimit('attendance_search', FALLBACK_SEARCH_MAX);
+  if (!rl.allowed) {
+    return {
+      ok: false,
+      code: 'RATE_LIMITED',
+      retryAfterSeconds: rl.retryAfterSeconds,
+      message: `Too many search attempts. Please wait ${rl.retryAfterSeconds} seconds before trying again.`,
+    };
+  }
+
+  try {
+    const matched =
+      params.mode === 'mobile'
+        ? await lookupActiveStudentsForAttendanceByMobile(normalizedMobile)
+        : await lookupActiveStudentsForAttendanceById(normalizedId);
+
+    if (!matched || matched.length === 0) {
+      return {
+        ok: false,
+        code: 'STUDENT_NOT_FOUND',
+        message: 'Student Not Found.',
+      };
+    }
+
+    const students: AttendanceSearchStudentDto[] = matched.map((m) => ({
+      studentId: m.studentId,
+      studentName: m.studentName,
+      fatherName: m.fatherName,
+      studentClass: m.studentClass,
+      course: m.course,
+      batch: m.batch,
+      maskedMobile: m.maskedMobile,
+      photoUrl: m.photoUrl || '',
+      photoDataUrl: m.photoDataUrl || '',
+      enrolledDate: m.enrolledDate || '',
+      attendanceKeyHash: m.attendanceKeyHash,
+      _legacyMobile: normalizedMobile || m._legacyMobile || undefined,
+    }));
+
+    let attendance: Extract<AttendanceSearchApiResult, { ok: true }>['attendance'] = null;
+    const rawHolidays = await fetchPublicAttendanceHolidays();
+    const holidays: AttendanceSearchHolidayDto[] = rawHolidays.map((h) => ({
+      id: h.id,
+      date: h.date,
+      title: h.title,
+      batchId: h.batchId,
+      dayType: h.dayType,
+    }));
+
+    if (students.length === 1) {
+      const ledger = await fetchStudentAttendanceById(
+        students[0].studentId,
+        targetYear,
+        students[0]._legacyMobile
+      );
+      if (ledger) {
+        attendance = {
+          id: ledger.id,
+          studentId: ledger.studentId,
+          year: ledger.year,
+          batchId: ledger.batchId,
+          batchTiming: ledger.batchTiming,
+          enrolledDate: ledger.enrolledDate || '',
+          scheduledDays: Array.isArray(ledger.scheduledDays) ? ledger.scheduledDays : [],
+          records: ledger.records || {},
+        };
+      }
+    }
+
+    const recordCount = attendance?.records ? Object.keys(attendance.records).length : 0;
+
+    return {
+      ok: true,
+      serverIst: {
+        date: ist.date,
+        time: ist.time,
+        iso: ist.iso,
+        epochMs: ist.epochMs,
+        year: ist.year,
+        month: ist.month,
+        day: ist.day,
+        weekday: ist.weekday,
+        timezone: 'Asia/Kolkata',
+      },
+      year: targetYear,
+      students,
+      attendance,
+      hasAttendanceRecords: recordCount > 0,
+      holidays,
+    };
+  } catch (err) {
+    console.error('[attendance-fallback] Firestore lookup failed:', err);
+    return {
+      ok: false,
+      code: 'SERVICE_UNAVAILABLE',
+      message: isFirebaseUnavailableError(err)
+        ? 'Database Temporarily Unavailable. Please check your internet connection and try again.'
+        : 'Server Temporarily Unavailable. Please try again in a moment.',
+    };
+  }
+}
+
 export async function searchStudentAttendanceApi(params: {
   mode: 'mobile' | 'id';
   query: string;
@@ -366,7 +568,7 @@ export async function searchStudentAttendanceApi(params: {
           method: 'POST',
           body: JSON.stringify(params),
         },
-        12000
+        10000
       );
 
       if (response.ok && isJson && json && json.ok === true && Array.isArray(json.students)) {
@@ -386,6 +588,7 @@ export async function searchStudentAttendanceApi(params: {
         };
       }
 
+      // Strictly honor authoritative JSON verdicts from Express backend
       if (response.status === 404 && isJson && json) {
         return {
           ok: false,
@@ -429,39 +632,29 @@ export async function searchStudentAttendanceApi(params: {
         };
       }
 
-      const isTransient =
-        response.status === 502 ||
-        response.status === 503 ||
-        response.status === 504 ||
-        !isJson;
+      // If /api/* returned non-JSON HTML (e.g., static host 404 or proxy 302), switch to fail-safe immediately
+      if (!isJson) {
+        return fallbackDirectFirestoreAttendanceSearch(params);
+      }
+
+      const isTransient = response.status === 502 || response.status === 503 || response.status === 504;
       if (isTransient && attempt < maxAttempts) {
-        await delayMs(450);
+        await delayMs(400);
         continue;
       }
 
-      return {
-        ok: false,
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'Server Temporarily Unavailable. Please try again in a moment.',
-      };
+      // Backend temporarily unavailable after retry -> fail-safe direct rules-protected Firestore lookup
+      return fallbackDirectFirestoreAttendanceSearch(params);
     } catch {
       if (attempt < maxAttempts) {
-        await delayMs(450);
+        await delayMs(400);
         continue;
       }
-      return {
-        ok: false,
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'Server Temporarily Unavailable. Please check your internet connection and try again.',
-      };
+      return fallbackDirectFirestoreAttendanceSearch(params);
     }
   }
 
-  return {
-    ok: false,
-    code: 'SERVICE_UNAVAILABLE',
-    message: 'Server Temporarily Unavailable. Please try again in a moment.',
-  };
+  return fallbackDirectFirestoreAttendanceSearch(params);
 }
 
 export type AttendanceReportApiResult =
@@ -478,10 +671,68 @@ export type AttendanceReportApiResult =
       message: string;
     };
 
+async function fallbackDirectFirestoreAttendanceReport(params: {
+  studentId: string;
+  year: number;
+  legacyMobile?: string;
+}): Promise<AttendanceReportApiResult> {
+  const idCheck = normalizeStudentId(params.studentId);
+  if (!idCheck.ok) {
+    return { ok: false, code: 'INVALID_STUDENT_ID', message: idCheck.error };
+  }
+
+  const rl = checkFallbackRateLimit('attendance_report', FALLBACK_REPORT_MAX);
+  if (!rl.allowed) {
+    return {
+      ok: false,
+      code: 'RATE_LIMITED',
+      retryAfterSeconds: rl.retryAfterSeconds,
+      message: `Too many requests. Please wait ${rl.retryAfterSeconds} seconds.`,
+    };
+  }
+
+  try {
+    const ledger = await fetchStudentAttendanceById(
+      idCheck.studentId,
+      params.year,
+      params.legacyMobile
+    );
+    const attendance = ledger
+      ? {
+          id: ledger.id,
+          studentId: ledger.studentId,
+          year: ledger.year,
+          batchId: ledger.batchId,
+          batchTiming: ledger.batchTiming,
+          enrolledDate: ledger.enrolledDate || '',
+          scheduledDays: Array.isArray(ledger.scheduledDays) ? ledger.scheduledDays : [],
+          records: ledger.records || {},
+        }
+      : null;
+    const recordCount = attendance?.records ? Object.keys(attendance.records).length : 0;
+    return {
+      ok: true,
+      year: params.year,
+      attendance,
+      hasAttendanceRecords: recordCount > 0,
+    };
+  } catch (err) {
+    console.error('[attendance-report-fallback] Firestore lookup failed:', err);
+    return {
+      ok: false,
+      code: 'SERVICE_UNAVAILABLE',
+      message: isFirebaseUnavailableError(err)
+        ? 'Database Temporarily Unavailable. Please check your internet connection and retry.'
+        : 'Server Temporarily Unavailable. Please try again in a moment.',
+    };
+  }
+}
+
 export async function fetchStudentAttendanceReportApi(params: {
   studentId: string;
   year: number;
   reportToken?: string;
+  legacyMobile?: string;
 }): Promise<AttendanceReportApiResult> {
   const maxAttempts = 2;
 
@@ -491,9 +742,13 @@ export async function fetchStudentAttendanceReportApi(params: {
         '/api/attendance/report',
         {
           method: 'POST',
-          body: JSON.stringify(params),
+          body: JSON.stringify({
+            studentId: params.studentId,
+            year: params.year,
+            reportToken: params.reportToken,
+          }),
         },
-        12000
+        10000
       );
 
       if (response.ok && isJson && json && json.ok === true) {
@@ -529,37 +784,25 @@ export async function fetchStudentAttendanceReportApi(params: {
         };
       }
 
-      const isTransient =
-        response.status === 502 ||
-        response.status === 503 ||
-        response.status === 504 ||
-        !isJson;
+      if (!isJson) {
+        return fallbackDirectFirestoreAttendanceReport(params);
+      }
+
+      const isTransient = response.status === 502 || response.status === 503 || response.status === 504;
       if (isTransient && attempt < maxAttempts) {
-        await delayMs(450);
+        await delayMs(400);
         continue;
       }
 
-      return {
-        ok: false,
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'Server Temporarily Unavailable. Please try again in a moment.',
-      };
+      return fallbackDirectFirestoreAttendanceReport(params);
     } catch {
       if (attempt < maxAttempts) {
-        await delayMs(450);
+        await delayMs(400);
         continue;
       }
-      return {
-        ok: false,
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'Server Temporarily Unavailable. Please check your internet connection and retry.',
-      };
+      return fallbackDirectFirestoreAttendanceReport(params);
     }
   }
 
-  return {
-    ok: false,
-    code: 'SERVICE_UNAVAILABLE',
-    message: 'Server Temporarily Unavailable. Please try again in a moment.',
-  };
+  return fallbackDirectFirestoreAttendanceReport(params);
 }

@@ -68,24 +68,36 @@ interface FirebaseAppletConfig {
 }
 
 function loadFirebaseAppletConfig(): FirebaseAppletConfig | null {
-  try {
-    const cfgPath = path.resolve(__dirname, 'firebase-applet-config.json');
-    if (!fs.existsSync(cfgPath)) return null;
-    const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as Partial<FirebaseAppletConfig>;
-    if (!parsed.projectId || !parsed.apiKey || parsed.projectId === 'remixed-project-id') {
-      return null;
+  const candidatePaths = [
+    path.resolve(__dirname, 'firebase-applet-config.json'),
+    path.resolve(process.cwd(), 'firebase-applet-config.json'),
+  ];
+  for (const cfgPath of candidatePaths) {
+    try {
+      if (!fs.existsSync(cfgPath)) continue;
+      const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as Partial<FirebaseAppletConfig>;
+      if (!parsed.projectId || !parsed.apiKey || parsed.projectId === 'remixed-project-id') {
+        continue;
+      }
+      return {
+        projectId: parsed.projectId,
+        apiKey: parsed.apiKey,
+        firestoreDatabaseId: parsed.firestoreDatabaseId || '(default)',
+      };
+    } catch (err) {
+      console.error(`[attendance-api] Failed to parse ${cfgPath}:`, err instanceof Error ? err.message : err);
     }
-    return {
-      projectId: parsed.projectId,
-      apiKey: parsed.apiKey,
-      firestoreDatabaseId: parsed.firestoreDatabaseId || '(default)',
-    };
-  } catch {
-    return null;
   }
+  console.error('[attendance-api] firebase-applet-config.json not found or incomplete.');
+  return null;
 }
 
 const FIREBASE_CONFIG = loadFirebaseAppletConfig();
+if (FIREBASE_CONFIG) {
+  console.info(
+    `[attendance-api] Firebase Firestore configured (project=${FIREBASE_CONFIG.projectId}, db=${FIREBASE_CONFIG.firestoreDatabaseId})`
+  );
+}
 
 function sha256HexServer(input: string): string {
   return crypto.createHash('sha256').update(input).digest('hex');
@@ -315,35 +327,57 @@ async function fetchFirestorePublicDoc(
     docId
   )}?key=${encodeURIComponent(FIREBASE_CONFIG.apiKey)}`;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
-  try {
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      signal: controller.signal,
-    });
-    if (res.status === 404) {
-      return { exists: false };
+  const maxAttempts = 2;
+  let lastError: FirestoreUpstreamError | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal,
+      });
+      if (res.status === 404) {
+        return { exists: false };
+      }
+      if (!res.ok) {
+        const status = res.status >= 500 ? 503 : res.status;
+        lastError = new FirestoreUpstreamError(
+          `Firestore read failed for ${collectionName} (HTTP ${res.status}).`,
+          status
+        );
+        if (res.status >= 500 && attempt < maxAttempts) {
+          await new Promise((r) => setTimeout(r, 350));
+          continue;
+        }
+        throw lastError;
+      }
+      const json = (await res.json()) as {
+        name?: string;
+        fields?: Record<string, FirestoreRestValue>;
+      };
+      const decoded = decodeFirestoreDocument(json);
+      return { exists: true, id: decoded.id, data: decoded.data };
+    } catch (err) {
+      if (err instanceof FirestoreUpstreamError) {
+        if (err.status < 500 || attempt >= maxAttempts) throw err;
+        lastError = err;
+      } else {
+        lastError = new FirestoreUpstreamError('Unable to reach Firebase Firestore right now.', 503);
+        if (attempt < maxAttempts) {
+          await new Promise((r) => setTimeout(r, 350));
+          continue;
+        }
+        throw lastError;
+      }
+    } finally {
+      clearTimeout(timer);
     }
-    if (!res.ok) {
-      throw new FirestoreUpstreamError(
-        `Firestore read failed for ${collectionName} (HTTP ${res.status}).`,
-        res.status >= 500 ? 503 : res.status
-      );
-    }
-    const json = (await res.json()) as {
-      name?: string;
-      fields?: Record<string, FirestoreRestValue>;
-    };
-    const decoded = decodeFirestoreDocument(json);
-    return { exists: true, id: decoded.id, data: decoded.data };
-  } catch (err) {
-    if (err instanceof FirestoreUpstreamError) throw err;
-    throw new FirestoreUpstreamError('Unable to reach Firebase Firestore right now.', 503);
-  } finally {
-    clearTimeout(timer);
   }
+
+  throw lastError || new FirestoreUpstreamError('Unable to reach Firebase Firestore right now.', 503);
 }
 
 async function fetchFirestorePublicHolidays(): Promise<
@@ -681,10 +715,33 @@ async function startServer(): Promise<void> {
   app.disable('x-powered-by');
   app.use(express.json({ limit: '32kb' }));
 
-  // Force no-store on all /api responses so proxies never cache rate-limit/OTP/time responses
-  app.use('/api', (_req: Request, res: Response, next: NextFunction) => {
+  // Safe same-origin / preview CORS + no-store headers on all /api routes
+  app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+    const origin = req.headers.origin;
+    const host = req.headers.host || '';
+    if (typeof origin === 'string' && origin.length > 0) {
+      try {
+        const parsed = new URL(origin);
+        const isSameHost = parsed.host === host;
+        const isLocal = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+        const isRunApp = parsed.hostname.endsWith('.run.app') && parsed.protocol === 'https:';
+        if (isSameHost || isLocal || isRunApp) {
+          res.setHeader('Access-Control-Allow-Origin', origin);
+          res.setHeader('Vary', 'Origin');
+          res.setHeader('Access-Control-Allow-Credentials', 'true');
+          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Requested-With');
+        }
+      } catch {
+        // Ignore malformed Origin header
+      }
+    }
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
     next();
   });
 
@@ -697,6 +754,42 @@ async function startServer(): Promise<void> {
       service: 'tracking-rate-limit',
       timestamp: Date.now(),
     });
+  });
+
+  app.get('/api/attendance/health', async (_req: Request, res: Response) => {
+    if (!FIREBASE_CONFIG) {
+      res.status(503).json({
+        ok: false,
+        service: 'attendance-api',
+        firebaseConfigured: false,
+        firestoreReachable: false,
+        timestamp: Date.now(),
+      });
+      return;
+    }
+    try {
+      await fetchFirestorePublicDoc('settings', 'main');
+      res.json({
+        ok: true,
+        service: 'attendance-api',
+        firebaseConfigured: true,
+        firestoreReachable: true,
+        databaseId: FIREBASE_CONFIG.firestoreDatabaseId || '(default)',
+        timestamp: Date.now(),
+      });
+    } catch (err) {
+      console.error(
+        '[attendance-health] Firestore connectivity check failed:',
+        err instanceof Error ? err.message : err
+      );
+      res.status(503).json({
+        ok: false,
+        service: 'attendance-api',
+        firebaseConfigured: true,
+        firestoreReachable: false,
+        timestamp: Date.now(),
+      });
+    }
   });
 
   app.get('/api/time/ist', (_req: Request, res: Response) => {
@@ -1205,6 +1298,9 @@ async function startServer(): Promise<void> {
           ? Object.keys(attendance.records as Record<string, unknown>).length
           : 0;
 
+      console.info(
+        `[attendance-search] ok mode=${mode} matches=${students.length} hasRecords=${recordCount > 0}`
+      );
       res.json({
         ok: true,
         serverIst,
@@ -1215,7 +1311,10 @@ async function startServer(): Promise<void> {
         holidays,
       });
     } catch (err) {
-      console.error('Attendance search upstream error:', err);
+      console.error(
+        `[attendance-search] upstream error mode=${mode}:`,
+        err instanceof Error ? err.message : err
+      );
       res.status(503).json({
         ok: false,
         code: 'SERVICE_UNAVAILABLE',

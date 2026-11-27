@@ -47,6 +47,14 @@ service cloud.firestore {
       return !(field in data) || (data[field] is string && data[field].size() <= maxLen);
     }
 
+    function isOptionalHttpsUrl(data, field, maxLen) {
+      return !(field in data)
+        || data[field] == ''
+        || (data[field] is string
+          && data[field].size() <= maxLen
+          && data[field].matches('^https://[a-zA-Z0-9._~:/?#\\[\\]@!$&\'()*+,;=%-]+$'));
+    }
+
     function isValidPhone(val) {
       return val is string && val.size() >= 10 && val.size() <= 15 && val.matches('^[0-9+\\-\\s]{10,15}$');
     }
@@ -83,7 +91,7 @@ service cloud.firestore {
     function isValidApplication(data) {
       return data.keys().hasAll([
           'applicationNumber', 'trackingKey', 'studentName', 'studentMobile', 'studentWhatsapp',
-          'fatherName', 'fatherMobile', 'motherName', 'motherMobile', 'dob', 'gender',
+          'fatherName', 'fatherMobile', 'motherName', 'motherMobile', 'gender',
           'address', 'village', 'postOffice', 'district', 'state', 'pinCode',
           'studentClass', 'stream', 'course', 'batch',
           'feeAmount', 'paidAmount', 'paymentStatus', 'status',
@@ -107,7 +115,7 @@ service cloud.firestore {
         && isValidPhone(data.fatherMobile)
         && isValidString(data.motherName, 2, 120)
         && isValidPhone(data.motherMobile)
-        && isValidString(data.dob, 4, 20)
+        && isOptionalString(data, 'dob', 20)
         && (data.gender in ['Male', 'Female', 'Other'])
         && isValidString(data.address, 3, 400)
         && isValidString(data.village, 1, 120)
@@ -227,15 +235,26 @@ service cloud.firestore {
     function isValidBatch(data) {
       return data.keys().hasAll(['name', 'timing', 'active', 'order', 'updatedAt'])
         && data.keys().hasOnly([
-          'name', 'timing', 'capacity', 'feeOverride', 'scheduledDays', 'scheduleStartDate',
+          'name', 'timing', 'className', 'courseName', 'capacity', 'feeOverride',
+          'scheduledDays', 'scheduleStartDate',
+          'instagramUrl', 'telegramUrl', 'whatsappUrl', 'socialLinksActive',
+          'logoUrl', 'logoMediaId',
           'active', 'order', 'updatedAt'
         ])
         && isValidString(data.name, 2, 80)
         && isValidString(data.timing, 2, 80)
+        && isOptionalString(data, 'className', 60)
+        && isOptionalString(data, 'courseName', 100)
         && (!('capacity' in data) || isNonNegNumber(data.capacity, 5000))
         && (!('feeOverride' in data) || data.feeOverride == null || isNonNegNumber(data.feeOverride, 500000))
         && (!('scheduledDays' in data) || isValidWeekdayList(data.scheduledDays))
         && (!('scheduleStartDate' in data) || data.scheduleStartDate == '' || isValidDateString(data.scheduleStartDate))
+        && isOptionalHttpsUrl(data, 'instagramUrl', 400)
+        && isOptionalHttpsUrl(data, 'telegramUrl', 400)
+        && isOptionalHttpsUrl(data, 'whatsappUrl', 400)
+        && (!('socialLinksActive' in data) || data.socialLinksActive is bool)
+        && isOptionalString(data, 'logoUrl', 2000)
+        && isOptionalString(data, 'logoMediaId', 128)
         && data.active is bool
         && isNonNegNumber(data.order, 1000)
         && data.updatedAt is timestamp;
@@ -359,6 +378,9 @@ service cloud.firestore {
           'teacherBio', 'teacherExperience',
           'teacherSpecialization', 'teacherContactNumber', 'teacherWhatsappNumber',
           'teacherEmail', 'idCardMotivationalMessage',
+          'instagramUrl', 'telegramChannelUrl', 'telegramGroupUrl', 'whatsappCommunityUrl',
+          'socialLinksActive',
+          'mainLogoUrl', 'mainLogoMediaId', 'appLogoUrl', 'appLogoMediaId', 'faviconUrl', 'faviconMediaId',
           'updatedAt'
         ])
         && isValidString(data.instituteName, 2, 120)
@@ -389,6 +411,17 @@ service cloud.firestore {
         && isOptionalString(data, 'teacherWhatsappNumber', 30)
         && isOptionalString(data, 'teacherEmail', 160)
         && isOptionalString(data, 'idCardMotivationalMessage', 600)
+        && isOptionalHttpsUrl(data, 'instagramUrl', 400)
+        && isOptionalHttpsUrl(data, 'telegramChannelUrl', 400)
+        && isOptionalHttpsUrl(data, 'telegramGroupUrl', 400)
+        && isOptionalHttpsUrl(data, 'whatsappCommunityUrl', 400)
+        && (!('socialLinksActive' in data) || data.socialLinksActive is bool)
+        && isOptionalString(data, 'mainLogoUrl', 2000)
+        && isOptionalString(data, 'mainLogoMediaId', 128)
+        && isOptionalString(data, 'appLogoUrl', 2000)
+        && isOptionalString(data, 'appLogoMediaId', 128)
+        && isOptionalString(data, 'faviconUrl', 2000)
+        && isOptionalString(data, 'faviconMediaId', 128)
         && data.updatedAt is timestamp;
     }
 

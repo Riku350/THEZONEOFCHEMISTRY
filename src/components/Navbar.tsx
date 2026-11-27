@@ -1,14 +1,15 @@
 import React from 'react';
-import { Atom, CalendarCheck, ClipboardList, Home, Search, Shield } from 'lucide-react';
-import { PublicView } from '../types';
+import { CalendarCheck, ClipboardList, Home, Search, Shield } from 'lucide-react';
+import { InstituteSettings, PublicView } from '../types';
+import { BrandLogo } from './BrandLogo';
 
 interface NavbarProps {
   currentView: PublicView;
-  instituteName: string;
+  settings: InstituteSettings;
   onNavigate: (view: PublicView, sectionId?: string) => void;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({ currentView, instituteName, onNavigate }) => {
+export const Navbar: React.FC<NavbarProps> = ({ currentView, settings, onNavigate }) => {
   return (
     <>
       {/* Small Clean Top Navigation Bar */}
@@ -18,10 +19,16 @@ export const Navbar: React.FC<NavbarProps> = ({ currentView, instituteName, onNa
           <button
             type="button"
             onClick={() => onNavigate('home')}
-            className="inline-flex items-center gap-2 font-display text-sm sm:text-base font-bold tracking-tight text-gray-900 hover:text-violet-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="inline-flex items-center gap-2.5 font-display text-sm sm:text-base font-bold tracking-tight text-gray-900 hover:text-violet-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
-            <Atom className="w-4 h-4 text-violet-600 shrink-0" />
-            <span>{instituteName}</span>
+            <BrandLogo
+              settings={settings}
+              variant="main"
+              sizeClass="w-8 h-8"
+              iconSizeClass="w-4 h-4"
+              roundedClass="rounded-lg"
+            />
+            <span>{settings.instituteName}</span>
           </button>
 
           {/* Zone 2: Concise Desktop Nav Links */}

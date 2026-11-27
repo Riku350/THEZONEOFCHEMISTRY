@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { auth, googleProvider, OWNER_ADMIN_EMAIL } from '../lib/firebase';
 import { InstituteSettings, PublicView } from '../types';
+import { BrandLogo } from './BrandLogo';
 
 interface AdminLoginProps {
   settings: InstituteSettings;
@@ -160,8 +161,11 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({
       </button>
 
       <div className="app-card rounded-2xl p-6">
-        <div className="w-10 h-10 rounded-xl bg-violet-50 border border-violet-200 text-violet-700 flex items-center justify-center mb-4">
-          <ShieldCheck className="w-5 h-5" />
+        <div className="flex items-center gap-3 mb-4">
+          <BrandLogo settings={settings} variant="app" sizeClass="w-10 h-10" iconSizeClass="w-5 h-5" />
+          <div className="w-8 h-8 rounded-lg bg-violet-50 border border-violet-200 text-violet-700 flex items-center justify-center">
+            <ShieldCheck className="w-4 h-4" />
+          </div>
         </div>
         <h1 className="font-display text-xl font-bold text-gray-900">Admin Login</h1>
         <p className="mt-1 text-xs text-gray-500">

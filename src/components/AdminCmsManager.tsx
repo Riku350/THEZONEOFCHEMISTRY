@@ -51,6 +51,7 @@ import {
   saveCourse,
   saveInstituteSettings,
   saveNotice,
+  uploadBrandingAsset,
   uploadTeacherProfilePhoto,
 } from '../lib/firestoreService';
 import {
@@ -943,10 +944,18 @@ export const AdminNoticesAndCatalogPanel: React.FC<{
         id: editingBatchId || undefined,
         name: bName,
         timing: bTiming,
+        className: existingBatch?.className || '',
+        courseName: existingBatch?.courseName || '',
         capacity: Number(bCapacity) || 60,
         feeOverride: bFeeOverride ? Number(bFeeOverride) : null,
         scheduledDays: bScheduledDays.length > 0 ? bScheduledDays : DEFAULT_SCHEDULED_DAYS,
         scheduleStartDate: bStartDate,
+        instagramUrl: existingBatch?.instagramUrl || '',
+        telegramUrl: existingBatch?.telegramUrl || '',
+        whatsappUrl: existingBatch?.whatsappUrl || '',
+        socialLinksActive: existingBatch?.socialLinksActive !== false,
+        logoUrl: existingBatch?.logoUrl || '',
+        logoMediaId: existingBatch?.logoMediaId || '',
         active: existingBatch ? existingBatch.active : true,
         order: existingBatch ? existingBatch.order : batches.length + 1,
       });
@@ -1355,12 +1364,15 @@ export const AdminSettingsPanel: React.FC<{
   settings: InstituteSettings;
   admins: AdminUserRecord[];
   students?: StudentRecord[];
-  initialSubTab?: 'general' | 'idcard';
+  initialSubTab?: 'general' | 'branding' | 'idcard';
 }> = ({ settings, admins, students = [], initialSubTab = 'general' }) => {
-  const [subTab, setSubTab] = useState<'general' | 'idcard'>(initialSubTab);
+  const [subTab, setSubTab] = useState<'general' | 'branding' | 'idcard'>(initialSubTab);
   const [form, setForm] = useState(settings);
   const [busy, setBusy] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [uploadingBrandKind, setUploadingBrandKind] = useState<
+    null | 'main_logo' | 'app_logo' | 'favicon'
+  >(null);
   const [savedMsg, setSavedMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -1440,10 +1452,85 @@ export const AdminSettingsPanel: React.FC<{
       setSavedMsg(
         subTab === 'idcard'
           ? 'Teacher profile, portrait banner, and Double-Sided ID Card settings saved to Firebase.'
+          : subTab === 'branding'
+          ? 'Website branding, logos, and favicon saved to Firebase.'
           : 'Institute settings saved.'
       );
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to save settings.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleUploadBrandingFile = async (
+    file: File | null,
+    kind: 'main_logo' | 'app_logo' | 'favicon'
+  ) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setErrorMsg('Please select a valid PNG, JPG, JPEG, or WebP image file.');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setErrorMsg('Logo file must be smaller than 5 MB.');
+      return;
+    }
+    setUploadingBrandKind(kind);
+    setErrorMsg('');
+    setSavedMsg('');
+    try {
+      const uploaded = await uploadBrandingAsset(file, kind, file.name);
+      const nextForm: InstituteSettings = {
+        ...form,
+        ...(kind === 'main_logo'
+          ? { mainLogoUrl: uploaded.url, mainLogoMediaId: uploaded.mediaId }
+          : kind === 'app_logo'
+          ? { appLogoUrl: uploaded.url, appLogoMediaId: uploaded.mediaId }
+          : { faviconUrl: uploaded.url, faviconMediaId: uploaded.mediaId }),
+      };
+      setForm(nextForm);
+      const { id: _id, updatedAt: _u, ...rest } = nextForm;
+      await saveInstituteSettings(rest);
+      const label =
+        kind === 'main_logo'
+          ? 'Main Institute Logo'
+          : kind === 'app_logo'
+          ? 'App Logo'
+          : 'Browser Favicon';
+      setSavedMsg(`${label} uploaded and applied automatically across the website.`);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to upload branding logo.');
+    } finally {
+      setUploadingBrandKind(null);
+    }
+  };
+
+  const handleResetBrandingAsset = async (kind: 'main_logo' | 'app_logo' | 'favicon') => {
+    setBusy(true);
+    setErrorMsg('');
+    setSavedMsg('');
+    try {
+      const nextForm: InstituteSettings = {
+        ...form,
+        ...(kind === 'main_logo'
+          ? { mainLogoUrl: '', mainLogoMediaId: '' }
+          : kind === 'app_logo'
+          ? { appLogoUrl: '', appLogoMediaId: '' }
+          : { faviconUrl: '', faviconMediaId: '' }),
+      };
+      setForm(nextForm);
+      const { id: _id, updatedAt: _u, ...rest } = nextForm;
+      await saveInstituteSettings(rest);
+      const label =
+        kind === 'main_logo'
+          ? 'Main Institute Logo'
+          : kind === 'app_logo'
+          ? 'App Logo'
+          : 'Browser Favicon';
+      setSavedMsg(`${label} reset to default.`);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to reset logo.');
     } finally {
       setBusy(false);
     }
@@ -1675,7 +1762,7 @@ export const AdminSettingsPanel: React.FC<{
           </p>
         </div>
 
-        <div className="inline-flex p-1 rounded-xl bg-gray-100 border border-gray-200 self-start">
+        <div className="inline-flex flex-wrap p-1 rounded-xl bg-gray-100 border border-gray-200 self-start">
           <button
             type="button"
             onClick={() => setSubTab('general')}
@@ -1686,6 +1773,18 @@ export const AdminSettingsPanel: React.FC<{
             }`}
           >
             General &amp; Admins
+          </button>
+          <button
+            type="button"
+            onClick={() => setSubTab('branding')}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+              subTab === 'branding'
+                ? 'bg-white text-violet-700 shadow-2xs'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            <ImageIcon className="w-3.5 h-3.5" />
+            Website Branding
           </button>
           <button
             type="button"
@@ -1716,7 +1815,156 @@ export const AdminSettingsPanel: React.FC<{
         </div>
       )}
 
-      {subTab === 'general' ? (
+      {subTab === 'branding' ? (
+        <div className="space-y-5">
+          <form onSubmit={handleSave} className="app-card rounded-2xl p-5 space-y-4">
+            <div>
+              <h3 className="font-display text-base font-bold text-gray-900">
+                Website Name &amp; Brand Identity
+              </h3>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Changes apply automatically to the website header, intro screen, admin dashboard, admission form, student ID card, mobile app bar, and browser favicon.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  Website / Institute Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={120}
+                  value={form.instituteName}
+                  onChange={(e) => setForm({ ...form, instituteName: e.target.value })}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  Brand Tagline
+                </label>
+                <input
+                  type="text"
+                  maxLength={200}
+                  value={form.tagline}
+                  onChange={(e) => setForm({ ...form, tagline: e.target.value })}
+                  className={inputCls}
+                />
+              </div>
+            </div>
+            <div>
+              <button
+                type="submit"
+                disabled={busy}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs sm:text-sm font-semibold cursor-pointer"
+              >
+                {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                Save Website Name
+              </button>
+            </div>
+          </form>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {(
+              [
+                {
+                  kind: 'main_logo' as const,
+                  title: 'Main Institute Logo',
+                  desc: 'Displayed in Website Header, Admin Sidebar, Admission Form, and Student ID Card.',
+                  url: form.mainLogoUrl,
+                  mediaId: form.mainLogoMediaId,
+                },
+                {
+                  kind: 'app_logo' as const,
+                  title: 'App Logo',
+                  desc: 'Displayed in the Introduction Screen, Mobile App Header, and Admin Login.',
+                  url: form.appLogoUrl,
+                  mediaId: form.appLogoMediaId,
+                },
+                {
+                  kind: 'favicon' as const,
+                  title: 'Browser Favicon',
+                  desc: 'Displayed in browser tabs, bookmarks, and home-screen shortcuts.',
+                  url: form.faviconUrl,
+                  mediaId: form.faviconMediaId,
+                },
+              ] as const
+            ).map((item) => {
+              const hasAsset = Boolean(item.url || item.mediaId);
+              const isUploading = uploadingBrandKind === item.kind;
+              return (
+                <div key={item.kind} className="app-card rounded-2xl p-5 flex flex-col justify-between gap-4">
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <h4 className="font-display text-sm font-bold text-gray-900">{item.title}</h4>
+                      <span
+                        className={`px-2 py-0.5 rounded-md text-[10px] font-semibold ${
+                          hasAsset
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            : 'bg-gray-100 text-gray-500'
+                        }`}
+                      >
+                        {hasAsset ? 'Custom' : 'Default'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-500 leading-relaxed">{item.desc}</p>
+
+                    <div className="h-28 rounded-xl bg-gray-50 border border-dashed border-gray-300 flex items-center justify-center p-3 overflow-hidden">
+                      {hasAsset ? (
+                        <ResolvedImage
+                          url={item.url}
+                          mediaId={item.mediaId}
+                          alt={item.title}
+                          className="max-h-full max-w-full object-contain"
+                        />
+                      ) : (
+                        <div className="text-center">
+                          <ImageIcon className="w-6 h-6 text-gray-400 mx-auto" />
+                          <p className="text-[11px] text-gray-400 mt-1">PNG / JPG / WebP</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-gray-100">
+                    <label className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold cursor-pointer transition-colors">
+                      {isUploading ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Upload className="w-3.5 h-3.5" />
+                      )}
+                      {isUploading ? 'Uploading...' : hasAsset ? 'Replace' : 'Upload Logo'}
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        disabled={isUploading}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0] || null;
+                          e.target.value = '';
+                          void handleUploadBrandingFile(f, item.kind);
+                        }}
+                        className="hidden"
+                      />
+                    </label>
+                    {hasAsset && (
+                      <button
+                        type="button"
+                        disabled={busy || isUploading}
+                        onClick={() => void handleResetBrandingAsset(item.kind)}
+                        className="inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-white hover:bg-red-50 border border-gray-200 text-xs font-semibold text-red-600 cursor-pointer"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        Reset
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : subTab === 'general' ? (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
           <form onSubmit={handleSave} className="lg:col-span-7 app-card rounded-2xl p-5 space-y-3.5">
             <h3 className="font-display text-base font-bold text-gray-900">General Settings</h3>

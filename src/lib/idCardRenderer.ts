@@ -148,6 +148,37 @@ function drawMoleculeEmblem(
   ctx.restore();
 }
 
+function drawHeaderLogoOrEmblem(
+  ctx: CanvasRenderingContext2D,
+  logoImg: HTMLImageElement | null,
+  cx: number,
+  cy: number,
+  radius: number
+) {
+  if (logoImg) {
+    const boxSize = radius * 2.25;
+    const x = cx - boxSize / 2;
+    const y = cy - boxSize / 2;
+    ctx.save();
+    drawRoundedRect(ctx, x, y, boxSize, boxSize, Math.round(radius * 0.42));
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(237, 233, 254, 0.9)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.clip();
+    const pad = Math.max(5, Math.round(boxSize * 0.1));
+    const inner = boxSize - pad * 2;
+    const scale = Math.min(inner / logoImg.width, inner / logoImg.height);
+    const dw = logoImg.width * scale;
+    const dh = logoImg.height * scale;
+    ctx.drawImage(logoImg, cx - dw / 2, cy - dh / 2, dw, dh);
+    ctx.restore();
+    return;
+  }
+  drawMoleculeEmblem(ctx, cx, cy, radius, '#FFFFFF', '#DDD6FE', '#FFFFFF');
+}
+
 /**
  * FRONT SIDE — Student Details (Exact CR80 85.60 mm × 53.98 mm ratio at 400 DPI: 1348×850).
  * Pure white card surface, violet accent header, student photograph, 4-digit security code,
@@ -196,8 +227,14 @@ export async function renderIdCardFrontDataUrl(
   ctx.fillStyle = '#A78BFA';
   ctx.fillRect(16, 168, W - 32, 4);
 
-  // Logo Emblem
-  drawMoleculeEmblem(ctx, 84, 92, 30, '#FFFFFF', '#DDD6FE', '#FFFFFF');
+  // Logo Emblem (uses uploaded Institute Logo when configured)
+  const resolvedBrandLogo = await resolveMediaSource(
+    settings.mainLogoUrl || settings.appLogoUrl,
+    settings.mainLogoMediaId || settings.appLogoMediaId,
+    false
+  );
+  const brandLogoImg = await loadImageSafe(resolvedBrandLogo);
+  drawHeaderLogoOrEmblem(ctx, brandLogoImg, 84, 92, 30);
 
   // Institute Name & Teacher Name
   ctx.fillStyle = '#FFFFFF';
@@ -479,7 +516,13 @@ export async function renderIdCardBackDataUrl(settings: InstituteSettings): Prom
   ctx.fillStyle = '#A78BFA';
   ctx.fillRect(16, 114, W - 32, 4);
 
-  drawMoleculeEmblem(ctx, 72, 65, 22, '#FFFFFF', '#DDD6FE', '#FFFFFF');
+  const resolvedBackBrandLogo = await resolveMediaSource(
+    settings.mainLogoUrl || settings.appLogoUrl,
+    settings.mainLogoMediaId || settings.appLogoMediaId,
+    false
+  );
+  const backBrandLogoImg = await loadImageSafe(resolvedBackBrandLogo);
+  drawHeaderLogoOrEmblem(ctx, backBrandLogoImg, 72, 65, 22);
 
   ctx.fillStyle = '#FFFFFF';
   ctx.font = '700 30px "Outfit", "Plus Jakarta Sans", sans-serif';

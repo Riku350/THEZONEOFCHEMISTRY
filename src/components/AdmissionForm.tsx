@@ -28,6 +28,7 @@ import {
   StudentClass,
   StudentStream,
 } from '../types';
+import { BrandLogo } from './BrandLogo';
 
 interface AdmissionFormProps {
   settings: InstituteSettings;
@@ -59,7 +60,6 @@ export const AdmissionForm: React.FC<AdmissionFormProps> = ({
   const [fatherMobile, setFatherMobile] = useState('');
   const [motherName, setMotherName] = useState('');
   const [motherMobile, setMotherMobile] = useState('');
-  const [dob, setDob] = useState('');
   const [gender, setGender] = useState<Gender>('Male');
   const [address, setAddress] = useState('');
   const [village, setVillage] = useState('');
@@ -153,10 +153,6 @@ export const AdmissionForm: React.FC<AdmissionFormProps> = ({
       setErrorMsg("Please enter Mother's Full Name and a valid 10-digit Mother's Mobile Number.");
       return;
     }
-    if (!dob) {
-      setErrorMsg('Please select Date of Birth.');
-      return;
-    }
     if (
       address.trim().length < 3 ||
       !village.trim() ||
@@ -196,7 +192,6 @@ export const AdmissionForm: React.FC<AdmissionFormProps> = ({
         fatherMobile,
         motherName,
         motherMobile,
-        dob,
         gender,
         address,
         village,
@@ -338,10 +333,17 @@ export const AdmissionForm: React.FC<AdmissionFormProps> = ({
             <ArrowLeft className="w-3.5 h-3.5" />
             Back
           </button>
-          <h1 className="font-display text-2xl font-bold text-gray-900">Student Admission Form</h1>
-          <p className="text-xs sm:text-sm text-gray-500 mt-0.5">
-            No account needed · Session {settings.academicSession}
-          </p>
+          <div className="flex items-center gap-3 mt-1">
+            <BrandLogo settings={settings} sizeClass="w-10 h-10" iconSizeClass="w-5 h-5" />
+            <div>
+              <h1 className="font-display text-2xl font-bold text-gray-900">
+                Student Admission Form
+              </h1>
+              <p className="text-xs sm:text-sm text-gray-500 mt-0.5">
+                {settings.instituteName} · No account needed · Session {settings.academicSession}
+              </p>
+            </div>
+          </div>
         </div>
 
         <div className="app-card rounded-2xl px-4 py-3 bg-violet-50/50 border-violet-200 shrink-0">
@@ -460,19 +462,6 @@ export const AdmissionForm: React.FC<AdmissionFormProps> = ({
                 onChange={(e) => setFatherMobile(e.target.value.replace(/[^0-9]/g, '').slice(0, 10))}
                 placeholder="10-digit mobile"
                 className={`${INPUT_CLASS} font-mono`}
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
-                Date of Birth *
-              </label>
-              <input
-                type="date"
-                required
-                value={dob}
-                onChange={(e) => setDob(e.target.value)}
-                className={INPUT_CLASS}
               />
             </div>
 
