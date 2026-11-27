@@ -51,13 +51,49 @@
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-/* Print styling for Digital ID Cards and Receipts */
+/* Print styling for Double-Sided CR80 Digital ID Cards and Receipts */
+.print-only-id-sheets {
+  display: none;
+}
+
 @media print {
   body {
     background: #ffffff !important;
     color: #111827 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
   }
   .no-print {
     display: none !important;
   }
+  body.printing-cr80 > #root {
+    display: none !important;
+  }
+  .print-only-id-sheets {
+    display: block !important;
+  }
+  .cr80-print-page {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    min-height: 92vh !important;
+    padding: 10mm !important;
+    page-break-after: always !important;
+    break-after: page !important;
+  }
+  .cr80-print-page:last-child {
+    page-break-after: auto !important;
+    break-after: auto !important;
+  }
+  .cr80-card-physical {
+    width: 85.6mm !important;
+    height: 53.98mm !important;
+    object-fit: contain !important;
+    border: 0.25mm solid #d1d5db !important;
+    border-radius: 2.5mm !important;
+  }
 }
+

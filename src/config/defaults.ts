@@ -20,6 +20,12 @@ export const ASSETS = {
 export const CLASS_OPTIONS: StudentClass[] = ['Class 10', 'Class 11', 'Class 12', 'Other'];
 export const STREAM_OPTIONS: StudentStream[] = ['Science', 'PCM', 'PCB', 'Other'];
 
+export const DEFAULT_ID_CARD_MOTIVATIONAL_MESSAGE = `Success is not achieved in one day. It is built through daily hard work, discipline and dedication.
+
+Believe in yourself, stay focused on your goals, and never stop learning.
+
+Your future is in your hands!`;
+
 export const DEFAULT_SETTINGS: InstituteSettings = {
   id: 'main',
   instituteName: 'THE ZONE OF CHEMISTRY',
@@ -34,6 +40,16 @@ export const DEFAULT_SETTINGS: InstituteSettings = {
   email: 'admissions@thezoneofchemistry.in',
   address: 'Science Academic Complex, Main Coaching Road, Station Chowk, Bihar - 800001',
   signatureText: 'Sonu Sir #Baba',
+  attendanceExitTracking: false,
+  teacherPhotoUrl: '',
+  teacherPhotoMediaId: '',
+  teacherBio: '',
+  teacherExperience: '',
+  teacherSpecialization: '',
+  teacherContactNumber: '',
+  teacherWhatsappNumber: '',
+  teacherEmail: '',
+  idCardMotivationalMessage: DEFAULT_ID_CARD_MOTIVATIONAL_MESSAGE,
 };
 
 export const DEFAULT_COURSES: CourseItem[] = [

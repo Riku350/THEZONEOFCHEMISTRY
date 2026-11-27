@@ -3,17 +3,14 @@ import {
   AlertCircle,
   ArrowLeft,
   Calendar,
-  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Clock,
   Download,
-  KeyRound,
   Loader2,
   Phone,
   RotateCcw,
   Search,
-  ShieldCheck,
   User,
 } from 'lucide-react';
 import {
@@ -32,22 +29,19 @@ import {
 import {
   cleanPhone,
   fetchPublicAttendanceHolidays,
-  fetchVerifiedStudentAttendance,
-  fetchVerifiedTrackingProfile,
-  lookupTrackingIndexById,
-  lookupTrackingIndexByMobile,
-  sha256Hex,
+  fetchStudentAttendanceById,
+  lookupActiveStudentsForAttendanceById,
+  lookupActiveStudentsForAttendanceByMobile,
 } from '../lib/firestoreService';
+import { checkSearchRateLimit, isFirebaseUnavailableError } from '../lib/trackingApi';
 import {
   AttendanceHoliday,
+  AttendanceLookupEntry,
   BatchItem,
   CalendarDayStatus,
   InstituteSettings,
   PublicView,
   StudentAttendancePublicDoc,
-  StudentTrackingProfile,
-  TrackingIndexDoc,
-  TrackingIndexEntry,
 } from '../types';
 
 interface StudentAttendanceTrackerProps {
@@ -57,7 +51,7 @@ interface StudentAttendanceTrackerProps {
   compact?: boolean;
 }
 
-type SearchMode = 'id' | 'mobile';
+type SearchMode = 'mobile' | 'id';
 
 function calendarCellClasses(status: CalendarDayStatus, isSelected: boolean): string {
   const ring = isSelected ? 'ring-2 ring-violet-600 ring-offset-1' : '';
@@ -116,31 +110,22 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
   const [selectedYear, setSelectedYear] = useState(initialIst.year);
   const [selectedMonth, setSelectedMonth] = useState(initialIst.month);
 
-  // Search & OTP Verification State
-  const [mode, setMode] = useState<SearchMode>('id');
+  // Direct Search State (Registered Mobile Number or Student ID — No Login Required)
+  const [mode, setMode] = useState<SearchMode>('mobile');
   const [queryInput, setQueryInput] = useState('');
   const [searching, setSearching] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [notFound, setNotFound] = useState(false);
   const [rateLimitCountdown, setRateLimitCountdown] = useState(0);
 
-  const [indexDoc, setIndexDoc] = useState<TrackingIndexDoc | null>(null);
-  const [selectedEntry, setSelectedEntry] = useState<TrackingIndexEntry | null>(null);
+  // Matched Active Approved Student(s)
+  const [matchedStudents, setMatchedStudents] = useState<AttendanceLookupEntry[]>([]);
+  const [activeStudent, setActiveStudent] = useState<AttendanceLookupEntry | null>(null);
 
-  const [confirmMobileInput, setConfirmMobileInput] = useState('');
-  const [otpChallengeId, setOtpChallengeId] = useState('');
-  const [otpInput, setOtpInput] = useState('');
-  const [otpPreviewCode, setOtpPreviewCode] = useState('');
-  const [otpDeliveryMode, setOtpDeliveryMode] = useState<'sms' | 'preview' | ''>('');
-  const [otpCooldown, setOtpCooldown] = useState(0);
-  const [otpSending, setOtpSending] = useState(false);
-  const [otpVerifying, setOtpVerifying] = useState(false);
-  const [otpError, setOtpError] = useState('');
-
-  // Verified Attendance Data
-  const [verifiedMobile, setVerifiedMobile] = useState('');
-  const [verifiedProfile, setVerifiedProfile] = useState<StudentTrackingProfile | null>(null);
+  // Yearly Attendance Ledger & Calendar State
   const [attendanceDoc, setAttendanceDoc] = useState<StudentAttendancePublicDoc | null>(null);
+  const [attendanceLoadError, setAttendanceLoadError] = useState('');
+  const [attendanceReloadSeq, setAttendanceReloadSeq] = useState(0);
   const [holidays, setHolidays] = useState<AttendanceHoliday[]>([]);
   const [loadingYearData, setLoadingYearData] = useState(false);
   const [selectedDay, setSelectedDay] = useState<CalendarDayCell | null>(null);
@@ -151,7 +136,11 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
       setSelectedYear(t.year);
       setSelectedMonth(t.month);
     });
-    void fetchPublicAttendanceHolidays().then(setHolidays);
+    void fetchPublicAttendanceHolidays()
+      .then(setHolidays)
+      .catch(() => {
+        /* Holidays fall back gracefully without blocking attendance display */
+      });
   }, []);
 
   useEffect(() => {
@@ -162,46 +151,51 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
     return () => window.clearInterval(t);
   }, [rateLimitCountdown]);
 
+  // Fetch yearly attendance ledger immediately when an active student is selected or year changes
   useEffect(() => {
-    if (otpCooldown <= 0) return;
-    const t = window.setInterval(() => {
-      setOtpCooldown((s) => (s > 1 ? s - 1 : 0));
-    }, 1000);
-    return () => window.clearInterval(t);
-  }, [otpCooldown]);
-
-  // Refetch attendance ledger whenever verified student switches year
-  useEffect(() => {
-    if (!verifiedProfile?.studentId || !verifiedMobile) return;
+    if (!activeStudent?.studentId) return;
     let cancelled = false;
     setLoadingYearData(true);
+    setAttendanceLoadError('');
     setSelectedDay(null);
-    void fetchVerifiedStudentAttendance(verifiedProfile.studentId, verifiedMobile, selectedYear)
+
+    void fetchStudentAttendanceById(
+      activeStudent.studentId,
+      selectedYear,
+      activeStudent._legacyMobile
+    )
       .then((docData) => {
-        if (!cancelled) setAttendanceDoc(docData);
+        if (!cancelled) {
+          setAttendanceDoc(docData);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.error('Student attendance ledger load failed:', err);
+          setAttendanceDoc(null);
+          setAttendanceLoadError(
+            isFirebaseUnavailableError(err)
+              ? 'Firebase attendance database is temporarily unreachable. Please check your internet connection and retry.'
+              : 'Unable to load attendance records right now. Please try again.'
+          );
+        }
       })
       .finally(() => {
         if (!cancelled) setLoadingYearData(false);
       });
+
     return () => {
       cancelled = true;
     };
-  }, [verifiedProfile?.studentId, verifiedMobile, selectedYear]);
+  }, [activeStudent?.studentId, activeStudent?._legacyMobile, selectedYear, attendanceReloadSeq]);
 
   const resetAll = () => {
     setErrorMsg('');
     setNotFound(false);
-    setIndexDoc(null);
-    setSelectedEntry(null);
-    setConfirmMobileInput('');
-    setOtpChallengeId('');
-    setOtpInput('');
-    setOtpPreviewCode('');
-    setOtpDeliveryMode('');
-    setOtpError('');
-    setVerifiedMobile('');
-    setVerifiedProfile(null);
+    setMatchedStudents([]);
+    setActiveStudent(null);
     setAttendanceDoc(null);
+    setAttendanceLoadError('');
     setSelectedDay(null);
   };
 
@@ -218,186 +212,65 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
 
     resetAll();
     const trimmed = queryInput.trim();
-    if (mode === 'id') {
-      if (trimmed.length < 4) {
-        setErrorMsg('Please enter a valid Student ID Number.');
+    if (mode === 'mobile') {
+      const cleaned = cleanPhone(trimmed);
+      if (!/^[0-9]{10}$/.test(cleaned)) {
+        setErrorMsg('Please enter a valid 10-digit Registered Mobile Number.');
         return;
       }
     } else {
-      const cleaned = cleanPhone(trimmed);
-      if (cleaned.length !== 10) {
-        setErrorMsg('Please enter a valid 10-digit Registered Mobile Number.');
+      if (trimmed.length < 4 || !/^[a-zA-Z0-9_\-]+$/.test(trimmed)) {
+        setErrorMsg('Please enter a valid Student ID Number (e.g., ZOC-2026-123456).');
         return;
       }
     }
 
     setSearching(true);
     try {
-      const rlRes = await fetch('/api/tracking/rate-limit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode }),
-      });
-
-      if (rlRes.status === 429) {
-        const data = (await rlRes.json().catch(() => ({}))) as {
-          error?: string;
-          retryAfterSeconds?: number;
-        };
-        const waitSec = Number(data.retryAfterSeconds) || 30;
-        setRateLimitCountdown(waitSec);
-        setErrorMsg(
-          data.error || `Too many attempts. Please wait ${waitSec} seconds before retrying.`
-        );
+      // 1. Fail-closed server-side rate-limit check to prevent abuse
+      const rl = await checkSearchRateLimit(mode, 'attendance');
+      if (!rl.ok) {
+        if (rl.reason === 'rate_limited') {
+          setRateLimitCountdown(rl.retryAfterSeconds);
+        }
+        setErrorMsg(rl.message);
         return;
       }
 
-      if (!rlRes.ok) {
-        setErrorMsg('Unable to check rate limit. Please try again.');
-        return;
-      }
+      // 2. Direct Firebase lookup of ONLY approved and active student records
+      const results =
+        mode === 'mobile'
+          ? await lookupActiveStudentsForAttendanceByMobile(trimmed)
+          : await lookupActiveStudentsForAttendanceById(trimmed);
 
-      const found =
-        mode === 'id'
-          ? await lookupTrackingIndexById(trimmed)
-          : await lookupTrackingIndexByMobile(trimmed);
-
-      if (!found || !Array.isArray(found.entries) || found.entries.length === 0) {
+      if (!results || results.length === 0) {
         setNotFound(true);
         return;
       }
 
-      setIndexDoc(found);
-      if (mode === 'mobile') {
-        setConfirmMobileInput(cleanPhone(trimmed));
-      }
-      if (found.entries.length === 1) {
-        setSelectedEntry(found.entries[0]);
+      setMatchedStudents(results);
+      if (results.length === 1) {
+        setActiveStudent(results[0]);
       }
     } catch (err) {
       console.error('Attendance lookup error:', err);
-      setErrorMsg('Unable to connect to attendance server. Please try again.');
+      setErrorMsg(
+        isFirebaseUnavailableError(err)
+          ? 'Student attendance database is temporarily unavailable. Please check your internet connection and try again shortly.'
+          : 'Unable to complete attendance lookup right now. Please try again.'
+      );
     } finally {
       setSearching(false);
     }
   };
 
-  const handleRequestOtp = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!indexDoc || !selectedEntry || otpSending || otpCooldown > 0) return;
-
-    const cleaned = cleanPhone(confirmMobileInput);
-    if (cleaned.length !== 10) {
-      setOtpError('Enter the 10-digit mobile number registered with this Student ID.');
-      return;
-    }
-
-    setOtpSending(true);
-    setOtpError('');
-    try {
-      const res = await fetch('/api/tracking/otp/request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mobile: cleaned,
-          mobileHash: indexDoc.mobileHash,
-        }),
-      });
-      const data = (await res.json().catch(() => ({}))) as {
-        error?: string;
-        challengeId?: string;
-        cooldownSeconds?: number;
-        retryAfterSeconds?: number;
-        deliveryMode?: 'sms' | 'preview';
-        previewOtp?: string;
-      };
-
-      if (!res.ok) {
-        if (data.retryAfterSeconds) setOtpCooldown(Number(data.retryAfterSeconds));
-        setOtpError(data.error || 'Could not send verification OTP.');
-        return;
-      }
-
-      setOtpChallengeId(data.challengeId || '');
-      setOtpDeliveryMode(data.deliveryMode || 'preview');
-      setOtpPreviewCode(data.previewOtp || '');
-      setOtpCooldown(Number(data.cooldownSeconds) || 30);
-    } catch {
-      setOtpError('Network error while requesting OTP. Please try again.');
-    } finally {
-      setOtpSending(false);
-    }
-  };
-
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!indexDoc || !selectedEntry || !otpChallengeId || otpVerifying) return;
-
-    const cleanedOtp = otpInput.replace(/[^0-9]/g, '');
-    if (cleanedOtp.length !== 6) {
-      setOtpError('Please enter the 6-digit OTP.');
-      return;
-    }
-
-    setOtpVerifying(true);
-    setOtpError('');
-    try {
-      const cleanedMobile = cleanPhone(confirmMobileInput);
-      const mobileHash = await sha256Hex(cleanedMobile);
-      const res = await fetch('/api/tracking/otp/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          challengeId: otpChallengeId,
-          otp: cleanedOtp,
-          mobileHash,
-        }),
-      });
-      const data = (await res.json().catch(() => ({}))) as {
-        verified?: boolean;
-        error?: string;
-      };
-
-      if (!res.ok || !data.verified) {
-        setOtpError(data.error || 'Invalid OTP. Please try again.');
-        return;
-      }
-
-      const profile = await fetchVerifiedTrackingProfile(
-        selectedEntry.applicationNumber,
-        cleanedMobile
-      );
-      if (!profile) {
-        setOtpError('Verified student profile could not be loaded. Contact institute office.');
-        return;
-      }
-
-      setVerifiedMobile(cleanedMobile);
-      setVerifiedProfile(profile);
-      if (profile.studentId) {
-        setLoadingYearData(true);
-        const att = await fetchVerifiedStudentAttendance(
-          profile.studentId,
-          cleanedMobile,
-          selectedYear
-        );
-        setAttendanceDoc(att);
-        setLoadingYearData(false);
-      }
-    } catch {
-      setOtpError('Verification failed. Please retry.');
-    } finally {
-      setOtpVerifying(false);
-    }
-  };
-
   const resolvedBatch = useMemo(() => {
-    if (!verifiedProfile) return null;
-    return resolveStudentBatch(verifiedProfile.batch, batches);
-  }, [verifiedProfile, batches]);
+    if (!activeStudent) return null;
+    return resolveStudentBatch(activeStudent.batch, batches);
+  }, [activeStudent, batches]);
 
   const analytics = useMemo(() => {
-    if (!verifiedProfile || !verifiedProfile.studentId || !resolvedBatch) return null;
+    if (!activeStudent || !resolvedBatch) return null;
     const scheduledDays =
       attendanceDoc?.scheduledDays && attendanceDoc.scheduledDays.length > 0
         ? attendanceDoc.scheduledDays
@@ -405,7 +278,7 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
     return computeStudentAttendanceAnalytics({
       batchId: attendanceDoc?.batchId || resolvedBatch.batchId,
       batchTiming: attendanceDoc?.batchTiming || resolvedBatch.batchTiming,
-      enrolledDate: attendanceDoc?.enrolledDate || '',
+      enrolledDate: attendanceDoc?.enrolledDate || activeStudent.enrolledDate || '',
       scheduleStartDate: resolvedBatch.scheduleStartDate,
       scheduledDays,
       recordsByDate: attendanceDoc?.records || {},
@@ -414,7 +287,15 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
       selectedMonth,
       todayIst,
     });
-  }, [verifiedProfile, resolvedBatch, attendanceDoc, holidays, selectedYear, selectedMonth, todayIst]);
+  }, [activeStudent, resolvedBatch, attendanceDoc, holidays, selectedYear, selectedMonth, todayIst]);
+
+  const monthlyDailyLogs = useMemo(() => {
+    if (!analytics) return [];
+    return analytics.calendarDays
+      .filter((cell) => cell.status === 'Present' && cell.record)
+      .slice()
+      .reverse();
+  }, [analytics]);
 
   const availableYears = useMemo(() => {
     const cur = Number(todayIst.slice(0, 4)) || new Date().getFullYear();
@@ -442,14 +323,14 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
   };
 
   const handleDownloadPdf = () => {
-    if (!verifiedProfile || !verifiedProfile.studentId || !analytics) return;
+    if (!activeStudent || !analytics) return;
     downloadStudentAttendancePdf({
-      studentName: verifiedProfile.studentName,
-      studentId: verifiedProfile.studentId,
-      fatherName: verifiedProfile.fatherName,
-      studentClass: verifiedProfile.studentClass,
-      course: verifiedProfile.course,
-      batchTiming: attendanceDoc?.batchTiming || verifiedProfile.batch,
+      studentName: activeStudent.studentName,
+      studentId: activeStudent.studentId,
+      fatherName: activeStudent.fatherName,
+      studentClass: activeStudent.studentClass,
+      course: activeStudent.course,
+      batchTiming: attendanceDoc?.batchTiming || activeStudent.batch,
       analytics,
       settings,
     });
@@ -467,36 +348,40 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
             Student Attendance Portal
           </h2>
           <p className="mt-1 text-xs sm:text-sm text-gray-500">
-            Check daily entry/exit timings, monthly calendar, and yearly reports with OTP verification — no account required.
+            Enter your registered mobile number or Student ID to view your attendance report, daily entry/exit times, monthly calendar, and downloadable PDF.
           </p>
         </div>
-        {verifiedProfile && (
-          <button
-            type="button"
-            onClick={resetAll}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-xs font-semibold text-gray-700 self-start cursor-pointer"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            Search Another
-          </button>
+        {activeStudent && (
+          <div className="flex items-center gap-2 self-start">
+            {matchedStudents.length > 1 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveStudent(null);
+                  setAttendanceDoc(null);
+                  setSelectedDay(null);
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-violet-50 hover:bg-violet-100 border border-violet-200 text-xs font-semibold text-violet-700 cursor-pointer"
+              >
+                Switch Student
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={resetAll}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-xs font-semibold text-gray-700 cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              Search Another
+            </button>
+          </div>
         )}
       </div>
 
-      {/* Step 1: Search Box (Shown until OTP verified) */}
-      {!verifiedProfile && (
+      {/* Direct Search Card (Shown when no active student report is open) */}
+      {!activeStudent && (
         <div className="app-card rounded-2xl p-4 sm:p-6 space-y-4">
           <div className="inline-flex p-1 rounded-xl bg-gray-100 border border-gray-200/80">
-            <button
-              type="button"
-              onClick={() => handleModeSwitch('id')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
-                mode === 'id'
-                  ? 'bg-white text-violet-700 shadow-2xs'
-                  : 'text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              Student ID Number
-            </button>
             <button
               type="button"
               onClick={() => handleModeSwitch('mobile')}
@@ -508,25 +393,44 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
             >
               Registered Mobile Number
             </button>
+            <button
+              type="button"
+              onClick={() => handleModeSwitch('id')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                mode === 'id'
+                  ? 'bg-white text-violet-700 shadow-2xs'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              Student ID Number
+            </button>
           </div>
 
           <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-2.5">
             <div className="relative flex-1">
-              {mode === 'id' ? (
-                <User className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-              ) : (
+              {mode === 'mobile' ? (
                 <Phone className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              ) : (
+                <User className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
               )}
               <input
-                type="text"
+                type={mode === 'mobile' ? 'tel' : 'text'}
+                inputMode={mode === 'mobile' ? 'numeric' : 'text'}
+                maxLength={mode === 'mobile' ? 10 : 40}
                 value={queryInput}
-                onChange={(e) => setQueryInput(e.target.value)}
+                onChange={(e) => {
+                  if (mode === 'mobile') {
+                    setQueryInput(e.target.value.replace(/[^0-9]/g, '').slice(0, 10));
+                  } else {
+                    setQueryInput(e.target.value.toUpperCase());
+                  }
+                }}
                 placeholder={
-                  mode === 'id'
-                    ? 'Enter Student ID (e.g., ZOC-2026-123456)'
-                    : 'Enter 10-digit Registered Mobile Number'
+                  mode === 'mobile'
+                    ? 'Enter 10-digit Registered Mobile Number'
+                    : 'Enter Student ID (e.g., ZOC-2026-123456)'
                 }
-                className="w-full rounded-xl bg-gray-50 focus:bg-white border border-gray-200 focus:border-violet-500 pl-10 pr-4 py-3 text-sm font-mono text-gray-900 placeholder-gray-400 focus:outline-none transition-colors"
+                className="w-full rounded-xl bg-gray-50 focus:bg-white border border-gray-200 focus:border-violet-500 pl-10 pr-4 py-3 text-sm font-mono text-gray-900 placeholder:font-sans placeholder-gray-400 focus:outline-none transition-colors"
               />
             </div>
             <button
@@ -552,30 +456,36 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
 
           {notFound && (
             <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 text-xs sm:text-sm text-amber-900">
-              No student record found matching this{' '}
-              {mode === 'id' ? 'Student ID' : 'mobile number'}. Please verify the details entered or contact {settings.instituteName}.
+              {mode === 'mobile'
+                ? `No active approved student record found for this mobile number. Please check the 10-digit registered number or contact ${settings.instituteName}.`
+                : `No active approved student record found matching this Student ID. Please verify your Student ID or contact ${settings.instituteName}.`}
             </div>
           )}
 
-          {/* Step 2: Safe Multi-Student Selector (Application No & Course Only — Zero PII) */}
-          {indexDoc && indexDoc.entries.length > 1 && !selectedEntry && (
+          {/* Multiple Active Students Sharing Same Registered Mobile Number */}
+          {matchedStudents.length > 1 && (
             <div className="rounded-xl bg-violet-50/50 border border-violet-200 p-4 space-y-2.5">
               <p className="text-xs font-semibold text-violet-900">
-                Multiple enrollments found on {indexDoc.maskedMobile}. Select your course to verify with OTP:
+                Multiple active enrollments found on {matchedStudents[0].maskedMobile}. Tap your Student ID to view attendance:
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                {indexDoc.entries.map((entry) => (
+                {matchedStudents.map((entry) => (
                   <button
-                    key={entry.applicationNumber}
+                    key={entry.studentId}
                     type="button"
-                    onClick={() => setSelectedEntry(entry)}
+                    onClick={() => setActiveStudent(entry)}
                     className="text-left rounded-xl bg-white hover:border-violet-400 border border-gray-200 p-3 flex items-center justify-between gap-2 transition-colors cursor-pointer"
                   >
-                    <div>
+                    <div className="min-w-0">
                       <p className="font-mono text-xs font-bold text-violet-700">
-                        {entry.applicationNumber}
+                        {entry.studentId}
                       </p>
-                      <p className="text-xs text-gray-700 font-medium mt-0.5">{entry.course}</p>
+                      <p className="text-xs text-gray-800 font-semibold mt-0.5 truncate">
+                        {entry.course}
+                      </p>
+                      <p className="text-[11px] text-gray-500 mt-0.5">
+                        {entry.studentClass} · {entry.batch}
+                      </p>
                     </div>
                     <ChevronRight className="w-4 h-4 text-gray-400 shrink-0" />
                   </button>
@@ -583,209 +493,143 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
               </div>
             </div>
           )}
-
-          {/* Step 3: Mandatory OTP Verification Gate */}
-          {indexDoc && selectedEntry && (
-            <div className="rounded-2xl bg-violet-50/40 border border-violet-200 p-4 sm:p-5 space-y-4">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-start gap-2.5">
-                  <ShieldCheck className="w-5 h-5 text-violet-600 shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-sm font-bold text-gray-900">
-                      Verify Registered Mobile ({indexDoc.maskedMobile})
-                    </p>
-                    <p className="text-xs text-gray-600 mt-0.5">
-                      For student privacy, OTP verification is required before displaying attendance records for{' '}
-                      <span className="font-mono font-semibold text-violet-700">
-                        {selectedEntry.applicationNumber}
-                      </span>
-                      .
-                    </p>
-                  </div>
-                </div>
-                {indexDoc.entries.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedEntry(null);
-                      setOtpChallengeId('');
-                      setOtpInput('');
-                      setOtpPreviewCode('');
-                      setOtpError('');
-                    }}
-                    className="text-xs font-semibold text-violet-700 hover:underline shrink-0 cursor-pointer"
-                  >
-                    Change
-                  </button>
-                )}
-              </div>
-
-              {!otpChallengeId ? (
-                <form onSubmit={handleRequestOtp} className="flex flex-col sm:flex-row gap-2.5">
-                  <input
-                    type="tel"
-                    maxLength={10}
-                    value={confirmMobileInput}
-                    onChange={(e) =>
-                      setConfirmMobileInput(e.target.value.replace(/[^0-9]/g, '').slice(0, 10))
-                    }
-                    placeholder="Confirm 10-digit registered mobile"
-                    className="flex-1 rounded-xl bg-white border border-gray-200 focus:border-violet-500 px-3.5 py-2.5 text-sm font-mono text-gray-900 focus:outline-none"
-                  />
-                  <button
-                    type="submit"
-                    disabled={otpSending || otpCooldown > 0}
-                    className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-60 text-white text-xs sm:text-sm font-semibold whitespace-nowrap cursor-pointer"
-                  >
-                    {otpSending ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <KeyRound className="w-4 h-4" />
-                    )}
-                    {otpCooldown > 0 ? `Resend in ${otpCooldown}s` : 'Send OTP'}
-                  </button>
-                </form>
-              ) : (
-                <form onSubmit={handleVerifyOtp} className="space-y-3">
-                  {otpDeliveryMode === 'preview' && otpPreviewCode && (
-                    <div className="rounded-xl bg-white border border-violet-200 px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs">
-                      <span className="text-gray-600">
-                        In-session Verification Code for {indexDoc.maskedMobile}:
-                      </span>
-                      <span className="font-mono text-base font-bold text-violet-700 tracking-widest tabular-nums">
-                        {otpPreviewCode}
-                      </span>
-                    </div>
-                  )}
-
-                  <div className="flex flex-col sm:flex-row gap-2.5">
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      maxLength={6}
-                      value={otpInput}
-                      onChange={(e) => setOtpInput(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
-                      placeholder="Enter 6-digit OTP"
-                      className="flex-1 rounded-xl bg-white border border-gray-200 focus:border-violet-500 px-3.5 py-2.5 text-sm font-mono tracking-widest text-gray-900 focus:outline-none"
-                    />
-                    <button
-                      type="submit"
-                      disabled={otpVerifying}
-                      className="inline-flex items-center justify-center gap-1.5 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-60 text-white text-xs sm:text-sm font-semibold whitespace-nowrap cursor-pointer"
-                    >
-                      {otpVerifying ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <CheckCircle2 className="w-4 h-4" />
-                      )}
-                      Verify &amp; View Attendance
-                    </button>
-                    <button
-                      type="button"
-                      disabled={otpSending || otpCooldown > 0}
-                      onClick={() => void handleRequestOtp()}
-                      className="px-3.5 py-2.5 rounded-xl bg-white border border-gray-200 text-xs font-semibold text-gray-700 disabled:opacity-50 whitespace-nowrap cursor-pointer"
-                    >
-                      {otpCooldown > 0 ? `${otpCooldown}s` : 'Resend'}
-                    </button>
-                  </div>
-                </form>
-              )}
-
-              {otpError && (
-                <p className="text-xs text-red-600 font-medium flex items-center gap-1.5">
-                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                  {otpError}
-                </p>
-              )}
-            </div>
-          )}
         </div>
       )}
 
-      {/* Step 4: Verified Student Attendance Dashboard */}
-      {verifiedProfile && (
+      {/* Immediate Attendance Report Dashboard */}
+      {activeStudent && (
         <div className="space-y-5">
-          {/* Student Profile Banner */}
-          <div className="app-card rounded-2xl p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div className="flex items-center gap-3.5 min-w-0">
-              <div className="w-14 h-14 rounded-2xl overflow-hidden border border-gray-200 bg-violet-50 flex items-center justify-center shrink-0">
-                {verifiedProfile.photoUrl || verifiedProfile.photoDataUrl ? (
-                  <img
-                    src={verifiedProfile.photoUrl || verifiedProfile.photoDataUrl}
-                    alt={verifiedProfile.studentName}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <User className="w-6 h-6 text-violet-600" />
-                )}
-              </div>
-              <div className="min-w-0">
-                <h3 className="font-display text-base sm:text-lg font-bold text-gray-900 truncate">
-                  {verifiedProfile.studentName}
-                </h3>
-                <p className="text-xs font-mono text-violet-700 font-semibold">
-                  {verifiedProfile.studentId || verifiedProfile.applicationNumber} ·{' '}
-                  {verifiedProfile.studentClass} · {verifiedProfile.course}
-                </p>
-                <p className="text-xs text-gray-500 mt-0.5">
-                  Batch: <span className="font-medium text-gray-800">{verifiedProfile.batch}</span> ·{' '}
-                  Schedule:{' '}
-                  <span className="font-medium text-gray-800">
-                    {formatScheduledDaysSummary(
-                      attendanceDoc?.scheduledDays || resolvedBatch?.scheduledDays
+          {/* Student Profile Card (Privacy-Minimized: No Raw Mobile, Fees, or Address) */}
+          <div className="app-card rounded-2xl p-4 sm:p-5 space-y-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-16 h-16 sm:w-18 sm:h-18 rounded-2xl overflow-hidden border border-gray-200 bg-violet-50 flex items-center justify-center shrink-0">
+                  {activeStudent.photoUrl || activeStudent.photoDataUrl ? (
+                    <img
+                      src={activeStudent.photoUrl || activeStudent.photoDataUrl}
+                      alt={activeStudent.studentName}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <User className="w-7 h-7 text-violet-600" />
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="font-display text-base sm:text-lg font-bold text-gray-900 truncate">
+                      {activeStudent.studentName}
+                    </h3>
+                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-lg border text-[11px] font-semibold bg-emerald-50 border-emerald-200 text-emerald-700">
+                      Active Student
+                    </span>
+                  </div>
+                  <p className="text-xs font-mono text-violet-700 font-semibold mt-0.5">
+                    Student ID: {activeStudent.studentId}
+                  </p>
+                  <p className="text-xs text-gray-600 mt-0.5">
+                    Father&apos;s Name:{' '}
+                    <span className="font-semibold text-gray-900">
+                      {activeStudent.fatherName || '—'}
+                    </span>
+                    {activeStudent.maskedMobile && (
+                      <span className="ml-2.5 text-gray-400 font-mono text-[11px]">
+                        ({activeStudent.maskedMobile})
+                      </span>
                     )}
-                  </span>
+                  </p>
+                </div>
+              </div>
+
+              {analytics && !attendanceLoadError && (
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <select
+                    aria-label="Select Year"
+                    value={selectedYear}
+                    onChange={(e) => setSelectedYear(Number(e.target.value))}
+                    className="rounded-xl bg-gray-50 border border-gray-200 px-3 py-2 text-xs font-mono font-semibold text-gray-900 focus:outline-none focus:border-violet-500"
+                  >
+                    {availableYears.map((yr) => (
+                      <option key={yr} value={yr}>
+                        {yr}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={handleDownloadPdf}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Download Attendance PDF
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Academic & Batch Metadata Strip */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-3 border-t border-gray-100 text-xs">
+              <div className="rounded-xl bg-gray-50 border border-gray-100 px-3 py-2">
+                <p className="text-[11px] text-gray-500">Class</p>
+                <p className="font-semibold text-gray-900 mt-0.5">{activeStudent.studentClass}</p>
+              </div>
+              <div className="rounded-xl bg-gray-50 border border-gray-100 px-3 py-2">
+                <p className="text-[11px] text-gray-500">Course</p>
+                <p className="font-semibold text-gray-900 mt-0.5">{activeStudent.course}</p>
+              </div>
+              <div className="rounded-xl bg-gray-50 border border-gray-100 px-3 py-2">
+                <p className="text-[11px] text-gray-500">Batch Timing</p>
+                <p className="font-semibold text-gray-900 mt-0.5">
+                  {attendanceDoc?.batchTiming || activeStudent.batch}
+                </p>
+              </div>
+              <div className="rounded-xl bg-gray-50 border border-gray-100 px-3 py-2">
+                <p className="text-[11px] text-gray-500">Class Days</p>
+                <p className="font-semibold text-gray-900 mt-0.5">
+                  {formatScheduledDaysSummary(
+                    attendanceDoc?.scheduledDays || resolvedBatch?.scheduledDays
+                  )}
                 </p>
               </div>
             </div>
-
-            {verifiedProfile.studentId && analytics && (
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
-                <select
-                  aria-label="Select Year"
-                  value={selectedYear}
-                  onChange={(e) => setSelectedYear(Number(e.target.value))}
-                  className="rounded-xl bg-gray-50 border border-gray-200 px-3 py-2 text-xs font-mono font-semibold text-gray-900 focus:outline-none focus:border-violet-500"
-                >
-                  {availableYears.map((yr) => (
-                    <option key={yr} value={yr}>
-                      {yr}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={handleDownloadPdf}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  Download Attendance PDF
-                </button>
-              </div>
-            )}
           </div>
 
-          {/* Not Yet Approved Notice */}
-          {!verifiedProfile.studentId ? (
-            <div className="app-card rounded-2xl p-6 text-center space-y-2">
-              <Clock className="w-8 h-8 text-amber-500 mx-auto" />
-              <h4 className="font-display text-base font-bold text-gray-900">
-                Admission Status: {verifiedProfile.admissionStage}
-              </h4>
-              <p className="text-xs sm:text-sm text-gray-600 max-w-md mx-auto">
-                Attendance tracking activates automatically once your admission is approved and your Official Student ID QR card is generated.
-              </p>
-            </div>
-          ) : loadingYearData ? (
+          {loadingYearData ? (
             <div className="app-card rounded-2xl p-10 flex items-center justify-center gap-2.5 text-sm text-gray-500">
               <Loader2 className="w-4 h-4 animate-spin text-violet-600" />
               Loading {selectedYear} attendance records...
             </div>
+          ) : attendanceLoadError ? (
+            <div className="app-card rounded-2xl p-6 text-center space-y-3 border-red-200 bg-red-50/40">
+              <AlertCircle className="w-8 h-8 text-red-500 mx-auto" />
+              <h4 className="font-display text-base font-bold text-gray-900">
+                Attendance Service Temporarily Unavailable
+              </h4>
+              <p className="text-xs sm:text-sm text-red-700 max-w-md mx-auto">
+                {attendanceLoadError}
+              </p>
+              <button
+                type="button"
+                onClick={() => setAttendanceReloadSeq((n) => n + 1)}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Retry Loading Attendance
+              </button>
+            </div>
           ) : (
             analytics && (
               <>
-                {/* 6 Core KPI Cards */}
+                {Object.keys(attendanceDoc?.records || {}).length === 0 && (
+                  <div className="rounded-2xl bg-violet-50/60 border border-violet-200 px-4 py-3 text-xs sm:text-sm text-violet-900 flex items-start gap-2.5">
+                    <Clock className="w-4 h-4 text-violet-600 shrink-0 mt-0.5" />
+                    <span>
+                      No QR attendance scans have been recorded for <strong>{selectedYear}</strong> yet.
+                      Your attendance totals and monthly calendar will update automatically as soon as your teacher scans your Student ID card.
+                    </span>
+                  </div>
+                )}
+
+                {/* 6 Core Attendance KPI Cards */}
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
                   {[
                     {
@@ -842,7 +686,7 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
                   ))}
                 </div>
 
-                {/* Interactive Monthly Calendar + Selected Date Details */}
+                {/* Interactive Monthly Calendar + Selected Date Entry/Exit Details */}
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
                   <div className="lg:col-span-8 app-card rounded-2xl p-4 sm:p-5 space-y-4">
                     <div className="flex items-center justify-between gap-3">
@@ -938,19 +782,19 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
                     </div>
 
                     <p className="text-[11px] text-gray-500 pt-1">
-                      Tap any date to view Entry Time, Exit Time (if recorded), Batch Timing, and Attendance Status in IST.
+                      Tap any date to view Daily Entry Time, Daily Exit Time, Batch Timing, and Attendance Status in IST.
                     </p>
                   </div>
 
                   {/* Selected Date Detail Card */}
                   <div className="lg:col-span-4 app-card rounded-2xl p-4 sm:p-5 space-y-3.5">
                     <h4 className="font-display text-sm font-bold text-gray-900">
-                      Date Attendance Details
+                      Daily Entry &amp; Exit Details
                     </h4>
 
                     {!selectedDay ? (
                       <div className="rounded-xl bg-gray-50 border border-gray-200 p-5 text-center text-xs text-gray-500">
-                        Select any date on the calendar to inspect attendance date, entry/exit time, batch timing, and status.
+                        Select any date on the calendar to inspect attendance date, daily entry time, daily exit time, batch timing, and status.
                       </div>
                     ) : (
                       <div className="space-y-3 text-xs sm:text-sm">
@@ -992,7 +836,7 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
                             </span>
                           </div>
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-gray-500">Entry Time</span>
+                            <span className="text-gray-500">Daily Entry Time</span>
                             <span className="font-mono font-semibold text-emerald-700 tabular-nums">
                               {selectedDay.record?.entryTimeMs
                                 ? formatIstTime(selectedDay.record.entryTimeMs)
@@ -1000,7 +844,7 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
                             </span>
                           </div>
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-gray-500">Exit Time</span>
+                            <span className="text-gray-500">Daily Exit Time</span>
                             <span className="font-mono font-semibold text-violet-700 tabular-nums">
                               {selectedDay.record?.exitTimeMs
                                 ? formatIstTime(selectedDay.record.exitTimeMs)
@@ -1016,6 +860,58 @@ export const StudentAttendanceTracker: React.FC<StudentAttendanceTrackerProps> =
                     )}
                   </div>
                 </div>
+
+                {/* Daily Entry & Exit Log for Selected Month (when present scans exist) */}
+                {monthlyDailyLogs.length > 0 && (
+                  <div className="app-card rounded-2xl p-4 sm:p-5 space-y-3">
+                    <div>
+                      <h4 className="font-display text-base font-bold text-gray-900">
+                        Daily Entry &amp; Exit Log ({MONTH_NAMES[selectedMonth - 1]} {selectedYear})
+                      </h4>
+                      <p className="text-xs text-gray-500">
+                        Recorded classroom check-in and check-out timestamps (IST).
+                      </p>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs sm:text-sm">
+                        <thead>
+                          <tr className="border-b border-gray-200 text-xs text-gray-500">
+                            <th className="pb-2 font-medium">Date</th>
+                            <th className="pb-2 font-medium">Status</th>
+                            <th className="pb-2 font-medium">Daily Entry Time</th>
+                            <th className="pb-2 font-medium">Daily Exit Time</th>
+                            <th className="pb-2 font-medium">Batch Timing</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 text-gray-700">
+                          {monthlyDailyLogs.map((cell) => (
+                            <tr
+                              key={cell.date}
+                              onClick={() => setSelectedDay(cell)}
+                              className="hover:bg-gray-50/80 cursor-pointer"
+                            >
+                              <td className="py-2 font-mono text-gray-900 tabular-nums">
+                                {formatIstDisplayDate(cell.date)}
+                              </td>
+                              <td className="py-2 font-semibold text-emerald-600">Present</td>
+                              <td className="py-2 font-mono text-emerald-700 tabular-nums">
+                                {cell.record?.entryTimeMs
+                                  ? formatIstTime(cell.record.entryTimeMs)
+                                  : '—'}
+                              </td>
+                              <td className="py-2 font-mono text-violet-700 tabular-nums">
+                                {cell.record?.exitTimeMs
+                                  ? formatIstTime(cell.record.exitTimeMs)
+                                  : 'Not Recorded'}
+                              </td>
+                              <td className="py-2 text-gray-600">{cell.batchTiming}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
 
                 {/* 12-Month Attendance Report */}
                 <div className="app-card rounded-2xl p-4 sm:p-5 space-y-3">

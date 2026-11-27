@@ -97,6 +97,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onPublicDataChanged,
 }) => {
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
+  const [settingsSubTab, setSettingsSubTab] = useState<'general' | 'idcard'>('general');
   const [moreSheetOpen, setMoreSheetOpen] = useState(false);
 
   // Live Firestore collections
@@ -952,15 +953,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     View ID cards, edit student details, suspend/reactivate, or export CSV.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  disabled={students.length === 0}
-                  onClick={() => exportStudentsCsv(students)}
-                  className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white hover:bg-gray-50 border border-gray-200 disabled:opacity-40 text-gray-700 text-xs font-semibold whitespace-nowrap cursor-pointer"
-                >
-                  <Download className="w-4 h-4 text-violet-600" />
-                  Export CSV
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSettingsSubTab('idcard');
+                      setActiveTab('settings');
+                    }}
+                    className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-violet-50 hover:bg-violet-100 border border-violet-200 text-violet-700 text-xs font-semibold whitespace-nowrap cursor-pointer"
+                  >
+                    <IdCard className="w-4 h-4" />
+                    ID Card &amp; Teacher Profile
+                  </button>
+                  <button
+                    type="button"
+                    disabled={students.length === 0}
+                    onClick={() => exportStudentsCsv(students)}
+                    className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white hover:bg-gray-50 border border-gray-200 disabled:opacity-40 text-gray-700 text-xs font-semibold whitespace-nowrap cursor-pointer"
+                  >
+                    <Download className="w-4 h-4 text-violet-600" />
+                    Export CSV
+                  </button>
+                </div>
               </div>
 
               <div className="app-card rounded-2xl p-3.5 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
@@ -1182,9 +1196,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             />
           )}
 
-          {/* TAB 9: SETTINGS & ADMINS */}
+          {/* TAB 9: SETTINGS, ID CARD TEACHER PROFILE & ADMINS */}
           {activeTab === 'settings' && (
-            <AdminSettingsPanel settings={settings} admins={admins} />
+            <AdminSettingsPanel
+              settings={settings}
+              admins={admins}
+              students={students}
+              initialSubTab={settingsSubTab}
+            />
           )}
         </main>
       </div>

@@ -29,6 +29,8 @@ import {
   ApplicationStatusLookup,
   AttendanceAuditLog,
   AttendanceHoliday,
+  AttendanceLookupEntry,
+  AttendanceLookupIndexDoc,
   AttendanceRecord,
   AttendanceStatus,
   BannerItem,
@@ -1068,6 +1070,9 @@ export async function approveApplicationAndCreateStudent(
           remarks: `Congratulations! Admission approved. Your Student ID is ${result.student.studentId}.`,
           submittedAt: application.submittedAt,
         }).catch((syncErr) => console.warn('Tracking sync after approval warning:', syncErr));
+        await syncStudentAttendanceLookupIndex(result.student).catch((syncErr) =>
+          console.warn('Attendance lookup sync after approval warning:', syncErr)
+        );
         return result.student;
       }
     } catch (error) {
@@ -1305,6 +1310,20 @@ export async function updateStudentProfile(
       photoMediaId: student.photoMediaId,
       submittedAt: student.approvedAt,
     }).catch((syncErr) => console.warn('Tracking sync after student edit warning:', syncErr));
+
+    await syncStudentAttendanceLookupIndex(
+      {
+        ...student,
+        studentName: nextName,
+        studentMobile: nextMobile,
+        fatherName: nextFather,
+        studentClass: nextClass,
+        course: nextCourse,
+        batch: nextBatch,
+        status: nextStatus,
+      },
+      student.studentMobile
+    ).catch((syncErr) => console.warn('Attendance lookup sync after student edit warning:', syncErr));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `students/${student.studentId}`);
   }
@@ -1349,6 +1368,11 @@ export async function toggleStudentStatus(student: StudentRecord): Promise<void>
       photoMediaId: student.photoMediaId,
       submittedAt: student.approvedAt,
     }).catch((syncErr) => console.warn('Tracking sync after status toggle warning:', syncErr));
+
+    await syncStudentAttendanceLookupIndex({
+      ...student,
+      status: nextStatus,
+    }).catch((syncErr) => console.warn('Attendance lookup sync after status toggle warning:', syncErr));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `students/${student.studentId}`);
   }
@@ -1889,6 +1913,12 @@ export async function deleteFeeRule(id: string): Promise<void> {
   }
 }
 
+export async function uploadTeacherProfilePhoto(
+  file: File
+): Promise<{ url: string; mediaId: string }> {
+  return uploadMediaSmart(file, 'teacher_profile', false, 640);
+}
+
 export async function saveInstituteSettings(
   settings: Omit<InstituteSettings, 'id' | 'updatedAt'>
 ): Promise<void> {
@@ -1907,6 +1937,15 @@ export async function saveInstituteSettings(
       address: settings.address.trim().slice(0, 300),
       signatureText: settings.signatureText.trim().slice(0, 80),
       attendanceExitTracking: Boolean(settings.attendanceExitTracking),
+      teacherPhotoUrl: (settings.teacherPhotoUrl || '').trim().slice(0, 2000),
+      teacherPhotoMediaId: (settings.teacherPhotoMediaId || '').trim().slice(0, 128),
+      teacherBio: (settings.teacherBio || '').trim().slice(0, 600),
+      teacherExperience: (settings.teacherExperience || '').trim().slice(0, 120),
+      teacherSpecialization: (settings.teacherSpecialization || '').trim().slice(0, 160),
+      teacherContactNumber: (settings.teacherContactNumber || '').trim().slice(0, 30),
+      teacherWhatsappNumber: (settings.teacherWhatsappNumber || '').trim().slice(0, 30),
+      teacherEmail: (settings.teacherEmail || '').trim().slice(0, 160),
+      idCardMotivationalMessage: (settings.idCardMotivationalMessage || '').trim().slice(0, 600),
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
@@ -2182,10 +2221,160 @@ export async function buildPublicAttendanceKey(
   return `attpub_${hash}_${year}`;
 }
 
+export async function buildAttendanceIdLookupKey(studentId: string): Promise<string> {
+  const normId = sanitizeId(studentId.trim().toUpperCase());
+  const hash = await sha256Hex(normId);
+  return `attid_${hash}`;
+}
+
+export async function buildAttendanceMobileLookupKey(rawMobile: string): Promise<string> {
+  const cleaned = cleanPhone(rawMobile);
+  const hash = await sha256Hex(cleaned);
+  return `attmob_${hash}`;
+}
+
+export async function buildPublicAttendanceByIdKey(
+  studentId: string,
+  year: number
+): Promise<string> {
+  const normId = sanitizeId(studentId.trim().toUpperCase());
+  const hash = await sha256Hex(normId);
+  return `attid_${hash}_${year}`;
+}
+
+async function buildAttendanceLookupEntryPayload(
+  student: StudentRecord,
+  existingPhotoDataUrl = ''
+): Promise<Omit<AttendanceLookupEntry, '_legacyMobile'>> {
+  const normId = sanitizeId(student.studentId.trim().toUpperCase());
+  const cleanedMobile = cleanPhone(student.studentMobile);
+  const attendanceKeyHash = await sha256Hex(normId);
+
+  let photoDataUrl = existingPhotoDataUrl || '';
+  if (!photoDataUrl && !student.photoUrl && student.photoMediaId) {
+    const rawMedia = await resolveMediaSource('', student.photoMediaId, true).catch(() => '');
+    if (rawMedia) {
+      photoDataUrl = await shrinkImageDataUrlForProfile(rawMedia).catch(() => '');
+    }
+  }
+
+  return {
+    studentId: normId,
+    studentName: (student.studentName || 'Student').trim().slice(0, 120) || 'Student',
+    fatherName: (student.fatherName || '—').trim().slice(0, 120) || '—',
+    studentClass: (student.studentClass || '—').trim().slice(0, 40) || '—',
+    course: (student.course || 'Chemistry').trim().slice(0, 100) || 'Chemistry',
+    batch: (student.batch || 'General').trim().slice(0, 80) || 'General',
+    maskedMobile: maskMobileNumber(cleanedMobile),
+    photoUrl: (student.photoUrl || '').trim().slice(0, 2000),
+    photoDataUrl: photoDataUrl.slice(0, 250000),
+    enrolledDate: formatIstDateYmd(student.approvedAt) || '',
+    attendanceKeyHash,
+  };
+}
+
+/**
+ * Admin-only synchronizer maintaining /attendanceLookupIndex for ONLY approved & active students.
+ * Suspended students are immediately removed from both ID and mobile lookup indexes.
+ */
+export async function syncStudentAttendanceLookupIndex(
+  student: StudentRecord,
+  previousMobile?: string
+): Promise<void> {
+  const normId = sanitizeId((student.studentId || '').trim().toUpperCase());
+  const cleanedMobile = cleanPhone(student.studentMobile);
+  if (normId.length < 4 || cleanedMobile.length !== 10) return;
+
+  const [idLookupKey, mobLookupKey] = await Promise.all([
+    buildAttendanceIdLookupKey(normId),
+    buildAttendanceMobileLookupKey(cleanedMobile),
+  ]);
+  const idRef = doc(db, 'attendanceLookupIndex', idLookupKey);
+  const mobRef = doc(db, 'attendanceLookupIndex', mobLookupKey);
+  const nowTs = serverTimestamp();
+
+  const existingIdSnap = await getDoc(idRef).catch(() => null);
+  const existingPhotoDataUrl =
+    existingIdSnap?.exists() &&
+    Array.isArray(existingIdSnap.data().entries) &&
+    typeof existingIdSnap.data().entries[0]?.photoDataUrl === 'string'
+      ? (existingIdSnap.data().entries[0].photoDataUrl as string)
+      : '';
+
+  const batch = writeBatch(db);
+
+  if (student.status === 'active') {
+    const entry = await buildAttendanceLookupEntryPayload(student, existingPhotoDataUrl);
+    batch.set(idRef, {
+      lookupType: 'id',
+      entries: [entry],
+      updatedAt: nowTs,
+    });
+
+    const mobSnap = await getDoc(mobRef).catch(() => null);
+    const existingEntries: AttendanceLookupEntry[] =
+      mobSnap?.exists() && Array.isArray(mobSnap.data().entries)
+        ? (mobSnap.data().entries as AttendanceLookupEntry[]).filter(
+            (e) => e.studentId !== normId
+          )
+        : [];
+    const nextMobEntries = [...existingEntries, entry].slice(0, 10);
+    batch.set(mobRef, {
+      lookupType: 'mobile',
+      entries: nextMobEntries,
+      updatedAt: nowTs,
+    });
+  } else {
+    // Suspended student: remove from direct attendance lookup immediately
+    if (existingIdSnap?.exists()) {
+      batch.delete(idRef);
+    }
+    const mobSnap = await getDoc(mobRef).catch(() => null);
+    if (mobSnap?.exists() && Array.isArray(mobSnap.data().entries)) {
+      const remaining = (mobSnap.data().entries as AttendanceLookupEntry[]).filter(
+        (e) => e.studentId !== normId
+      );
+      if (remaining.length === 0) {
+        batch.delete(mobRef);
+      } else {
+        batch.set(mobRef, {
+          lookupType: 'mobile',
+          entries: remaining,
+          updatedAt: nowTs,
+        });
+      }
+    }
+  }
+
+  // Clean up old mobile lookup bucket if the student's registered mobile changed
+  const prevClean = cleanPhone(previousMobile || '');
+  if (prevClean.length === 10 && prevClean !== cleanedMobile) {
+    const prevMobKey = await buildAttendanceMobileLookupKey(prevClean);
+    const prevMobRef = doc(db, 'attendanceLookupIndex', prevMobKey);
+    const prevSnap = await getDoc(prevMobRef).catch(() => null);
+    if (prevSnap?.exists() && Array.isArray(prevSnap.data().entries)) {
+      const remaining = (prevSnap.data().entries as AttendanceLookupEntry[]).filter(
+        (e) => e.studentId !== normId
+      );
+      if (remaining.length === 0) {
+        batch.delete(prevMobRef);
+      } else {
+        batch.set(prevMobRef, {
+          lookupType: 'mobile',
+          entries: remaining,
+          updatedAt: nowTs,
+        });
+      }
+    }
+  }
+
+  await batch.commit();
+}
+
 /**
  * Syncs an approved student's yearly attendance ledger to /studentAttendancePublic/{key}
- * so the student can securely view their attendance after OTP verification without
- * exposing the raw /attendance collection publicly.
+ * under both attid_<sha256(studentId)>_<year> and legacy attpub_<sha256(studentId:mobile)>_<year>,
+ * and refreshes the privacy-minimized /attendanceLookupIndex entry.
  */
 export async function syncStudentPublicAttendanceYear(
   student: StudentRecord,
@@ -2197,7 +2386,10 @@ export async function syncStudentPublicAttendanceYear(
   if (cleanedMobile.length !== 10) return;
 
   const resolvedBatch = resolveStudentBatch(student.batch, batches);
-  const attKey = await buildPublicAttendanceKey(student.studentId, cleanedMobile, year);
+  const [attIdKey, attLegacyKey] = await Promise.all([
+    buildPublicAttendanceByIdKey(student.studentId, year),
+    buildPublicAttendanceKey(student.studentId, cleanedMobile, year),
+  ]);
   const enrolledDate = formatIstDateYmd(student.approvedAt) || '';
 
   try {
@@ -2221,7 +2413,7 @@ export async function syncStudentPublicAttendanceYear(
       records[extraRecord.date] = extraRecord.entry;
     }
 
-    await setDoc(doc(db, 'studentAttendancePublic', attKey), {
+    const ledgerPayload = {
       studentId: student.studentId,
       year,
       batchId: resolvedBatch.batchId,
@@ -2230,6 +2422,15 @@ export async function syncStudentPublicAttendanceYear(
       scheduledDays: resolvedBatch.scheduledDays,
       records,
       updatedAt: serverTimestamp(),
+    };
+
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'studentAttendancePublic', attIdKey), ledgerPayload);
+    batch.set(doc(db, 'studentAttendancePublic', attLegacyKey), ledgerPayload);
+    await batch.commit();
+
+    await syncStudentAttendanceLookupIndex(student).catch(() => {
+      /* Non-blocking refresh */
     });
   } catch (err) {
     console.warn(`Public attendance sync skipped for ${student.studentId}:`, err);
@@ -2695,31 +2896,150 @@ export async function fetchPublicAttendanceHolidays(): Promise<AttendanceHoliday
 }
 
 /**
- * Fetches an OTP-verified student's yearly attendance ledger using the unguessable
- * SHA-256 attendance key derived from studentId + verifiedMobile + year.
+ * Direct no-OTP lookup of ONLY approved & active students by Registered Mobile Number.
+ * Primary path reads privacy-minimized /attendanceLookupIndex/attmob_<sha256(mobile)>.
+ * Falls back cleanly to pre-backfill approved profiles (strictly masking mobile and
+ * stripping sensitive fields like fees, PIN, QR tokens, and suspended/pending records).
+ */
+export async function lookupActiveStudentsForAttendanceByMobile(
+  rawMobile: string
+): Promise<AttendanceLookupEntry[]> {
+  const cleaned = cleanPhone(rawMobile);
+  if (cleaned.length !== 10) return [];
+
+  const mobLookupKey = await buildAttendanceMobileLookupKey(cleaned);
+  try {
+    const snap = await getDoc(doc(db, 'attendanceLookupIndex', mobLookupKey));
+    if (snap.exists()) {
+      const data = snap.data() as AttendanceLookupIndexDoc;
+      if (Array.isArray(data.entries) && data.entries.length > 0) {
+        return data.entries.map((entry) => ({
+          ...entry,
+          _legacyMobile: cleaned,
+        }));
+      }
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `attendanceLookupIndex/${mobLookupKey}`);
+  }
+
+  // Seamless backward-compatible fallback for students approved before index backfill
+  try {
+    const legacyIndex = await lookupTrackingIndexByMobile(cleaned);
+    if (!legacyIndex || !Array.isArray(legacyIndex.entries) || legacyIndex.entries.length === 0) {
+      return [];
+    }
+
+    const approvedCandidates = legacyIndex.entries.filter(
+      (e) =>
+        e.hasStudentId &&
+        (e.admissionStage === 'Student ID Generated' || e.admissionStage === 'Approved')
+    );
+    if (approvedCandidates.length === 0) return [];
+
+    const results: AttendanceLookupEntry[] = [];
+    for (const candidate of approvedCandidates) {
+      const profile = await fetchVerifiedTrackingProfile(candidate.applicationNumber, cleaned);
+      if (
+        profile &&
+        profile.status === 'approved' &&
+        profile.studentId &&
+        profile.studentStatus !== 'suspended'
+      ) {
+        const normId = sanitizeId(profile.studentId.trim().toUpperCase());
+        const attendanceKeyHash = await sha256Hex(normId);
+        results.push({
+          studentId: normId,
+          studentName: profile.studentName,
+          fatherName: profile.fatherName || '—',
+          studentClass: profile.studentClass,
+          course: profile.course,
+          batch: profile.batch,
+          maskedMobile: maskMobileNumber(cleaned),
+          photoUrl: profile.photoUrl || '',
+          photoDataUrl: profile.photoDataUrl || '',
+          enrolledDate: formatIstDateYmd(profile.submittedAt) || '',
+          attendanceKeyHash,
+          _legacyMobile: cleaned,
+        });
+      }
+    }
+    return results;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `trackingIndex/mobile_fallback`);
+  }
+}
+
+/**
+ * Direct no-OTP lookup of ONLY approved & active students by Student ID Number.
+ * Reads privacy-minimized /attendanceLookupIndex/attid_<sha256(UPPERCASE_STUDENT_ID)>.
+ */
+export async function lookupActiveStudentsForAttendanceById(
+  rawStudentId: string
+): Promise<AttendanceLookupEntry[]> {
+  const normId = sanitizeId(rawStudentId.trim().toUpperCase());
+  if (normId.length < 4) return [];
+
+  const idLookupKey = await buildAttendanceIdLookupKey(normId);
+  try {
+    const snap = await getDoc(doc(db, 'attendanceLookupIndex', idLookupKey));
+    if (!snap.exists()) return [];
+    const data = snap.data() as AttendanceLookupIndexDoc;
+    return Array.isArray(data.entries) ? data.entries : [];
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `attendanceLookupIndex/${idLookupKey}`);
+  }
+}
+
+/**
+ * Fetches an active approved student's yearly attendance ledger directly by Student ID
+ * (attid_<sha256(studentId)>_<year>), with seamless fallback to legacy attpub_ key if present.
+ */
+export async function fetchStudentAttendanceById(
+  studentId: string,
+  year: number,
+  legacyMobile?: string
+): Promise<StudentAttendancePublicDoc | null> {
+  const normId = sanitizeId(studentId.trim().toUpperCase());
+  if (normId.length < 4) return null;
+
+  const attIdKey = await buildPublicAttendanceByIdKey(normId, year);
+  try {
+    const snap = await getDoc(doc(db, 'studentAttendancePublic', attIdKey));
+    if (snap.exists()) {
+      return { id: snap.id, ...snap.data() } as StudentAttendancePublicDoc;
+    }
+
+    const cleanedLegacy = cleanPhone(legacyMobile || '');
+    if (cleanedLegacy.length === 10) {
+      const legacyKey = await buildPublicAttendanceKey(normId, cleanedLegacy, year);
+      const legacySnap = await getDoc(doc(db, 'studentAttendancePublic', legacyKey));
+      if (legacySnap.exists()) {
+        return { id: legacySnap.id, ...legacySnap.data() } as StudentAttendancePublicDoc;
+      }
+    }
+    return null;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `studentAttendancePublic/${attIdKey}`);
+  }
+}
+
+/**
+ * Legacy helper retained for backward compatibility.
  */
 export async function fetchVerifiedStudentAttendance(
   studentId: string,
   verifiedMobile: string,
   year: number
 ): Promise<StudentAttendancePublicDoc | null> {
-  const normId = sanitizeId(studentId.trim().toUpperCase());
-  const cleaned = cleanPhone(verifiedMobile);
-  if (!normId || cleaned.length !== 10) return null;
-
-  const attKey = await buildPublicAttendanceKey(normId, cleaned, year);
-  try {
-    const snap = await getDoc(doc(db, 'studentAttendancePublic', attKey));
-    if (!snap.exists()) return null;
-    return { id: snap.id, ...snap.data() } as StudentAttendancePublicDoc;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.GET, `studentAttendancePublic/${attKey}`);
-  }
+  return fetchStudentAttendanceById(studentId, year, verifiedMobile);
 }
 
 /**
- * Silent admin backfill ensuring every approved student has their current-year
- * /studentAttendancePublic doc synced with their latest batch schedule & attendance.
+ * Silent admin backfill ensuring every approved & active student has both:
+ * 1) /attendanceLookupIndex (ID & Mobile buckets for direct no-OTP attendance lookup), and
+ * 2) /studentAttendancePublic (attid_ + legacy attpub_ yearly ledgers).
+ * Suspended students are automatically removed from /attendanceLookupIndex.
  */
 export async function syncApprovedStudentsPublicAttendance(
   students: StudentRecord[],
@@ -2735,15 +3055,63 @@ export async function syncApprovedStudentsPublicAttendance(
     byStudent.set(r.studentId, arr);
   }
 
+  // Group active approved students by 10-digit mobile for clean atomic mobile buckets
+  const activeByMobile = new Map<string, AttendanceLookupEntry[]>();
+
   for (const stu of students) {
-    if (stu.status !== 'active') continue;
     const cleanedMobile = cleanPhone(stu.studentMobile);
     if (cleanedMobile.length !== 10) continue;
+
+    if (stu.status !== 'active') {
+      // Ensure suspended student is purged from direct attendance lookup index
+      try {
+        await syncStudentAttendanceLookupIndex(stu);
+      } catch (err) {
+        console.warn(`Attendance lookup cleanup skipped for ${stu.studentId}:`, err);
+      }
+      continue;
+    }
+
     try {
       const resolvedBatch = resolveStudentBatch(stu.batch, batches);
-      const attKey = await buildPublicAttendanceKey(stu.studentId, cleanedMobile, year);
+      const [attIdKey, attLegacyKey, idLookupKey] = await Promise.all([
+        buildPublicAttendanceByIdKey(stu.studentId, year),
+        buildPublicAttendanceKey(stu.studentId, cleanedMobile, year),
+        buildAttendanceIdLookupKey(stu.studentId),
+      ]);
+
+      // 1. Sync /attendanceLookupIndex ID doc & collect entry for mobile bucket
+      const idSnap = await getDoc(doc(db, 'attendanceLookupIndex', idLookupKey)).catch(() => null);
+      const existingPhotoDataUrl =
+        idSnap?.exists() &&
+        Array.isArray(idSnap.data().entries) &&
+        typeof idSnap.data().entries[0]?.photoDataUrl === 'string'
+          ? (idSnap.data().entries[0].photoDataUrl as string)
+          : '';
+      const entry = await buildAttendanceLookupEntryPayload(stu, existingPhotoDataUrl);
+
+      const mobList = activeByMobile.get(cleanedMobile) || [];
+      mobList.push(entry);
+      activeByMobile.set(cleanedMobile, mobList);
+
+      const needsIdIndexWrite =
+        !idSnap?.exists() ||
+        idSnap.data().entries?.[0]?.studentName !== entry.studentName ||
+        idSnap.data().entries?.[0]?.batch !== entry.batch ||
+        idSnap.data().entries?.[0]?.course !== entry.course ||
+        idSnap.data().entries?.[0]?.photoUrl !== entry.photoUrl;
+
+      if (needsIdIndexWrite) {
+        await setDoc(doc(db, 'attendanceLookupIndex', idLookupKey), {
+          lookupType: 'id',
+          entries: [entry],
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      // 2. Sync /studentAttendancePublic yearly ledgers (attid_ + attpub_)
       const stuRecords = byStudent.get(stu.studentId) || [];
-      const existingSnap = await getDoc(doc(db, 'studentAttendancePublic', attKey));
+      const existingSnap = await getDoc(doc(db, 'studentAttendancePublic', attIdKey));
       if (existingSnap.exists()) {
         const existingData = existingSnap.data() as StudentAttendancePublicDoc;
         const existingCount = Object.keys(existingData.records || {}).length;
@@ -2767,7 +3135,7 @@ export async function syncApprovedStudentsPublicAttendance(
         };
       }
 
-      await setDoc(doc(db, 'studentAttendancePublic', attKey), {
+      const ledgerPayload = {
         studentId: stu.studentId,
         year,
         batchId: resolvedBatch.batchId,
@@ -2776,9 +3144,38 @@ export async function syncApprovedStudentsPublicAttendance(
         scheduledDays: resolvedBatch.scheduledDays,
         records,
         updatedAt: serverTimestamp(),
-      });
+      };
+
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'studentAttendancePublic', attIdKey), ledgerPayload);
+      batch.set(doc(db, 'studentAttendancePublic', attLegacyKey), ledgerPayload);
+      await batch.commit();
     } catch (err) {
       console.warn(`Attendance public sync skipped for ${stu.studentId}:`, err);
+    }
+  }
+
+  // 3. Write grouped mobile lookup docs in /attendanceLookupIndex
+  for (const [mobile, entries] of activeByMobile.entries()) {
+    try {
+      const mobLookupKey = await buildAttendanceMobileLookupKey(mobile);
+      const mobRef = doc(db, 'attendanceLookupIndex', mobLookupKey);
+      const mobSnap = await getDoc(mobRef).catch(() => null);
+      const nextEntries = entries.slice(0, 10);
+      const existingIds =
+        mobSnap?.exists() && Array.isArray(mobSnap.data().entries)
+          ? (mobSnap.data().entries as AttendanceLookupEntry[]).map((e) => `${e.studentId}:${e.batch}`).join(',')
+          : '';
+      const nextIds = nextEntries.map((e) => `${e.studentId}:${e.batch}`).join(',');
+      if (!mobSnap?.exists() || existingIds !== nextIds) {
+        await setDoc(mobRef, {
+          lookupType: 'mobile',
+          entries: nextEntries,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    } catch (err) {
+      console.warn('Attendance mobile lookup bucket sync warning:', err);
     }
   }
 }

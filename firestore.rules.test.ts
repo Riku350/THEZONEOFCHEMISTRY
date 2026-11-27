@@ -212,6 +212,42 @@ export const DIRTY_DOZEN_CASES: AdversarialPayloadCase[] = [
     auth: null,
     expectedResult: 'PERMISSION_DENIED',
     enforcedBy: 'allow list: if isAdmin()'
+  },
+  {
+    id: 20,
+    name: 'Unauthorized / Oversized Teacher ID Card Settings Write',
+    collection: 'settings',
+    operation: 'update',
+    auth: null,
+    docId: 'main',
+    payload: { teacherBio: 'A'.repeat(2000), teacherPhotoUrl: 'https://evil.example/x.jpg' },
+    expectedResult: 'PERMISSION_DENIED',
+    enforcedBy: 'isAdmin() && isValidSettings(incoming()) && isOptionalString(data, "teacherBio", 600)'
+  },
+  {
+    id: 21,
+    name: 'Public Attendance Lookup Index Enumeration',
+    collection: 'attendanceLookupIndex',
+    operation: 'list',
+    auth: null,
+    expectedResult: 'PERMISSION_DENIED',
+    enforcedBy: 'allow list: if isAdmin()'
+  },
+  {
+    id: 22,
+    name: 'Forged Attendance Lookup Index Write or PII Smuggling',
+    collection: 'attendanceLookupIndex',
+    operation: 'create',
+    auth: null,
+    docId: 'attmob_forged1234',
+    payload: {
+      lookupType: 'mobile',
+      entries: [{ studentId: 'ZOC-2026-999999', studentMobile: '9876543210', feeAmount: 5500 }]
+    },
+    expectedResult: 'PERMISSION_DENIED',
+    enforcedBy: 'isAdmin() && isValidAttendanceLookupIndex(incoming())'
   }
 ];
+
+
 

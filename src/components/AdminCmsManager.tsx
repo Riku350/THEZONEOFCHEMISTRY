@@ -1,16 +1,25 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
+  AlertCircle,
   CheckCircle2,
   Edit3,
   Eye,
   EyeOff,
+  FileText,
+  IdCard,
+  Image as ImageIcon,
+  Layers,
   Loader2,
   Pin,
   Plus,
+  Printer,
+  RotateCcw,
   Save,
   Trash2,
   Upload,
 } from 'lucide-react';
+import { DEFAULT_ID_CARD_MOTIVATIONAL_MESSAGE } from '../config/defaults';
 import {
   DEFAULT_SCHEDULED_DAYS,
   formatScheduledDaysSummary,
@@ -30,7 +39,14 @@ import {
   saveCourse,
   saveInstituteSettings,
   saveNotice,
+  uploadTeacherProfilePhoto,
 } from '../lib/firestoreService';
+import {
+  CR80_HEIGHT_MM,
+  CR80_WIDTH_MM,
+  downloadIdCardPdf,
+  renderIdCardBothSidesDataUrls,
+} from '../lib/idCardRenderer';
 import {
   AdminUserRecord,
   BannerItem,
@@ -40,6 +56,7 @@ import {
   InstituteSettings,
   NoticeCategory,
   NoticeItem,
+  StudentRecord,
 } from '../types';
 import { ResolvedImage } from './ResolvedImage';
 
@@ -941,59 +958,254 @@ export const AdminNoticesAndCatalogPanel: React.FC<{
 };
 
 // -----------------------------------------------------------------------------
-// 4. INSTITUTE SETTINGS & ADMIN ACCOUNTS
+// 4. INSTITUTE SETTINGS, DOUBLE-SIDED ID CARD STUDIO & ADMIN ACCOUNTS
 // -----------------------------------------------------------------------------
+const PREVIEW_SAMPLE_STUDENT: StudentRecord = {
+  id: 'PREVIEW-SAMPLE',
+  studentId: 'ZOC-2026-000001',
+  applicationId: 'APP-PREVIEW',
+  applicationNumber: 'APP-2026-0001',
+  securityCode: '4821',
+  qrToken: 'ZOC:PREVIEW-SAMPLE',
+  studentName: 'Sample Student Name',
+  studentMobile: '0000000000',
+  fatherName: 'Sample Father Name',
+  studentClass: '12th',
+  course: 'NEET / JEE Chemistry',
+  batch: 'Morning Batch (7:00 AM)',
+  photoUrl: '',
+  feeAmount: 0,
+  paidAmount: 0,
+  paymentStatus: 'PENDING',
+  status: 'active',
+  academicSession: '2026–2027',
+  approvedAt: null,
+  updatedAt: null,
+};
+
 export const AdminSettingsPanel: React.FC<{
   settings: InstituteSettings;
   admins: AdminUserRecord[];
-}> = ({ settings, admins }) => {
+  students?: StudentRecord[];
+  initialSubTab?: 'general' | 'idcard';
+}> = ({ settings, admins, students = [], initialSubTab = 'general' }) => {
+  const [subTab, setSubTab] = useState<'general' | 'idcard'>(initialSubTab);
   const [form, setForm] = useState(settings);
   const [busy, setBusy] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [savedMsg, setSavedMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+
+  // ID Card Studio preview state
+  const [previewStudentId, setPreviewStudentId] = useState<string>('');
+  const [previewSide, setPreviewSide] = useState<'both' | 'front' | 'back'>('both');
+  const [previewFrontUrl, setPreviewFrontUrl] = useState('');
+  const [previewBackUrl, setPreviewBackUrl] = useState('');
+  const [renderingPreview, setRenderingPreview] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
 
   const [newUid, setNewUid] = useState('');
   const [newEmail, setNewEmail] = useState('');
   const [newName, setNewName] = useState('');
 
   useEffect(() => {
+    setSubTab(initialSubTab);
+  }, [initialSubTab]);
+
+  useEffect(() => {
     setForm(settings);
   }, [settings]);
+
+  useEffect(() => {
+    if (!previewStudentId && students.length > 0) {
+      setPreviewStudentId(students[0].studentId);
+    }
+  }, [students, previewStudentId]);
+
+  const previewStudent = useMemo<StudentRecord>(() => {
+    const match = students.find((s) => s.studentId === previewStudentId) || students[0];
+    if (match) return match;
+    return {
+      ...PREVIEW_SAMPLE_STUDENT,
+      academicSession: form.academicSession || '2026–2027',
+    };
+  }, [students, previewStudentId, form.academicSession]);
+
+  // Live CR80 Front + Back preview whenever on the ID Card sub-tab
+  useEffect(() => {
+    if (subTab !== 'idcard') return;
+    let active = true;
+    setRenderingPreview(true);
+    const timer = window.setTimeout(() => {
+      void renderIdCardBothSidesDataUrls(previewStudent, form)
+        .then(({ frontUrl, backUrl }) => {
+          if (active) {
+            setPreviewFrontUrl(frontUrl);
+            setPreviewBackUrl(backUrl);
+          }
+        })
+        .finally(() => {
+          if (active) setRenderingPreview(false);
+        });
+    }, 180);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [subTab, previewStudent, form]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setSavedMsg('');
+    setErrorMsg('');
     try {
       const { id: _id, updatedAt: _u, ...rest } = form;
       await saveInstituteSettings(rest);
-      setSavedMsg('Institute settings saved.');
+      setSavedMsg(
+        subTab === 'idcard'
+          ? 'Teacher profile and Double-Sided ID Card settings saved to Firebase.'
+          : 'Institute settings saved.'
+      );
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to save settings.');
     } finally {
       setBusy(false);
     }
+  };
+
+  const handleTeacherPhotoUpload = async (file: File | null) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setErrorMsg('Please select a valid JPG, PNG, or WebP image for the teacher photograph.');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setErrorMsg('Teacher photograph must be smaller than 5 MB.');
+      return;
+    }
+
+    setUploadingPhoto(true);
+    setErrorMsg('');
+    setSavedMsg('');
+    try {
+      const uploaded = await uploadTeacherProfilePhoto(file);
+      const nextForm: InstituteSettings = {
+        ...form,
+        teacherPhotoUrl: uploaded.url || '',
+        teacherPhotoMediaId: uploaded.mediaId || '',
+      };
+      setForm(nextForm);
+      const { id: _id, updatedAt: _u, ...rest } = nextForm;
+      await saveInstituteSettings(rest);
+      setSavedMsg('Teacher photograph uploaded and applied to Student ID Card back side.');
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Could not upload teacher photograph.');
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
+
+  const handleRemoveTeacherPhoto = async () => {
+    setBusy(true);
+    setErrorMsg('');
+    setSavedMsg('');
+    try {
+      const nextForm: InstituteSettings = {
+        ...form,
+        teacherPhotoUrl: '',
+        teacherPhotoMediaId: '',
+      };
+      setForm(nextForm);
+      const { id: _id, updatedAt: _u, ...rest } = nextForm;
+      await saveInstituteSettings(rest);
+      setSavedMsg('Teacher photograph removed from ID Card back side.');
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Could not remove teacher photograph.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDownloadPreviewPdf = async () => {
+    setDownloadingPdf(true);
+    try {
+      await downloadIdCardPdf(previewStudent, form);
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
+
+  const handlePrintPreviewBothSides = () => {
+    if (!previewFrontUrl || !previewBackUrl) return;
+    document.body.classList.add('printing-cr80');
+    const cleanup = () => {
+      document.body.classList.remove('printing-cr80');
+      window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+    window.print();
+    window.setTimeout(cleanup, 1500);
   };
 
   const handleAddAdmin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUid.trim() || !newEmail.trim()) return;
     setBusy(true);
+    setErrorMsg('');
     try {
       await addAuthorizedAdmin(newUid, newEmail, newName || 'Institute Admin');
       setNewUid('');
       setNewEmail('');
       setNewName('');
       setSavedMsg('Authorized administrator added.');
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to add administrator.');
     } finally {
       setBusy(false);
     }
   };
 
+  const hasTeacherPhoto = Boolean(form.teacherPhotoUrl || form.teacherPhotoMediaId);
+
   return (
     <div className="space-y-5">
-      <div>
-        <h2 className="font-display text-lg sm:text-xl font-bold text-gray-900">Settings</h2>
-        <p className="text-xs sm:text-sm text-gray-500">
-          Configure institute details, default fee, contact info, and admin access.
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h2 className="font-display text-lg sm:text-xl font-bold text-gray-900">
+            Settings &amp; ID Card Management
+          </h2>
+          <p className="text-xs sm:text-sm text-gray-500">
+            Configure institute details, admin accounts, and double-sided CR80 Student ID Card teacher branding.
+          </p>
+        </div>
+
+        <div className="inline-flex p-1 rounded-xl bg-gray-100 border border-gray-200 self-start">
+          <button
+            type="button"
+            onClick={() => setSubTab('general')}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+              subTab === 'general'
+                ? 'bg-white text-violet-700 shadow-2xs'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            General &amp; Admins
+          </button>
+          <button
+            type="button"
+            onClick={() => setSubTab('idcard')}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+              subTab === 'idcard'
+                ? 'bg-white text-violet-700 shadow-2xs'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            <IdCard className="w-3.5 h-3.5" />
+            ID Card &amp; Teacher Profile
+          </button>
+        </div>
       </div>
 
       {savedMsg && (
@@ -1003,204 +1215,616 @@ export const AdminSettingsPanel: React.FC<{
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        <form onSubmit={handleSave} className="lg:col-span-7 app-card rounded-2xl p-5 space-y-3.5">
-          <h3 className="font-display text-base font-bold text-gray-900">General Settings</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+      {errorMsg && (
+        <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-xs sm:text-sm text-red-700 flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+          <span>{errorMsg}</span>
+        </div>
+      )}
+
+      {subTab === 'general' ? (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+          <form onSubmit={handleSave} className="lg:col-span-7 app-card rounded-2xl p-5 space-y-3.5">
+            <h3 className="font-display text-base font-bold text-gray-900">General Settings</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Institute Name</label>
+                <input
+                  type="text"
+                  required
+                  value={form.instituteName}
+                  onChange={(e) => setForm({ ...form, instituteName: e.target.value })}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Lead Teacher</label>
+                <input
+                  type="text"
+                  required
+                  value={form.teacherName}
+                  onChange={(e) => setForm({ ...form, teacherName: e.target.value })}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Academic Session</label>
+                <input
+                  type="text"
+                  value={form.academicSession}
+                  onChange={(e) => setForm({ ...form, academicSession: e.target.value })}
+                  className={`${inputCls} font-mono`}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Default Fee (INR)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={form.defaultFee}
+                  onChange={(e) => setForm({ ...form, defaultFee: Number(e.target.value) })}
+                  className={`${inputCls} font-mono`}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Phone Number</label>
+                <input
+                  type="text"
+                  value={form.phone}
+                  onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                  className={`${inputCls} font-mono`}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">WhatsApp (with 91)</label>
+                <input
+                  type="text"
+                  value={form.whatsappNumber}
+                  onChange={(e) => setForm({ ...form, whatsappNumber: e.target.value })}
+                  className={`${inputCls} font-mono`}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Email</label>
+                <input
+                  type="email"
+                  value={form.email}
+                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">ID Card Signature</label>
+                <input
+                  type="text"
+                  value={form.signatureText}
+                  onChange={(e) => setForm({ ...form, signatureText: e.target.value })}
+                  className={inputCls}
+                />
+              </div>
+            </div>
+
             <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">Institute Name</label>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Admission Headline</label>
               <input
                 type="text"
-                required
-                value={form.instituteName}
-                onChange={(e) => setForm({ ...form, instituteName: e.target.value })}
+                value={form.admissionHeadline}
+                onChange={(e) => setForm({ ...form, admissionHeadline: e.target.value })}
                 className={inputCls}
               />
             </div>
+
             <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">Lead Teacher</label>
-              <input
-                type="text"
-                required
-                value={form.teacherName}
-                onChange={(e) => setForm({ ...form, teacherName: e.target.value })}
+              <label className="block text-xs font-medium text-gray-700 mb-1">Address</label>
+              <textarea
+                rows={2}
+                value={form.address}
+                onChange={(e) => setForm({ ...form, address: e.target.value })}
                 className={inputCls}
               />
             </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">Academic Session</label>
-              <input
-                type="text"
-                value={form.academicSession}
-                onChange={(e) => setForm({ ...form, academicSession: e.target.value })}
-                className={`${inputCls} font-mono`}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">Default Fee (INR)</label>
-              <input
-                type="number"
-                min={0}
-                value={form.defaultFee}
-                onChange={(e) => setForm({ ...form, defaultFee: Number(e.target.value) })}
-                className={`${inputCls} font-mono`}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">Phone Number</label>
-              <input
-                type="text"
-                value={form.phone}
-                onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                className={`${inputCls} font-mono`}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">WhatsApp (with 91)</label>
-              <input
-                type="text"
-                value={form.whatsappNumber}
-                onChange={(e) => setForm({ ...form, whatsappNumber: e.target.value })}
-                className={`${inputCls} font-mono`}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">Email</label>
-              <input
-                type="email"
-                value={form.email}
-                onChange={(e) => setForm({ ...form, email: e.target.value })}
-                className={inputCls}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">ID Card Signature</label>
-              <input
-                type="text"
-                value={form.signatureText}
-                onChange={(e) => setForm({ ...form, signatureText: e.target.value })}
-                className={inputCls}
-              />
-            </div>
-          </div>
 
-          <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">Admission Headline</label>
-            <input
-              type="text"
-              value={form.admissionHeadline}
-              onChange={(e) => setForm({ ...form, admissionHeadline: e.target.value })}
-              className={inputCls}
-            />
-          </div>
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 text-xs font-medium text-gray-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.admissionsOpen}
+                  onChange={(e) => setForm({ ...form, admissionsOpen: e.target.checked })}
+                  className="accent-violet-600"
+                />
+                Show &ldquo;Admissions Open&rdquo; Card on Homepage
+              </label>
+              <label className="flex items-center gap-2 text-xs font-medium text-gray-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.attendanceExitTracking)}
+                  onChange={(e) => setForm({ ...form, attendanceExitTracking: e.target.checked })}
+                  className="accent-violet-600"
+                />
+                Enable Separate Entry &amp; Exit Time Recording in QR Attendance Scanner
+              </label>
+            </div>
 
-          <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">Address</label>
-            <textarea
-              rows={2}
-              value={form.address}
-              onChange={(e) => setForm({ ...form, address: e.target.value })}
-              className={inputCls}
-            />
-          </div>
-
-          <div className="space-y-2">
-            <label className="flex items-center gap-2 text-xs font-medium text-gray-700 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={form.admissionsOpen}
-                onChange={(e) => setForm({ ...form, admissionsOpen: e.target.checked })}
-                className="accent-violet-600"
-              />
-              Show &ldquo;Admissions Open&rdquo; Card on Homepage
-            </label>
-            <label className="flex items-center gap-2 text-xs font-medium text-gray-700 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={Boolean(form.attendanceExitTracking)}
-                onChange={(e) => setForm({ ...form, attendanceExitTracking: e.target.checked })}
-                className="accent-violet-600"
-              />
-              Enable Separate Entry &amp; Exit Time Recording in QR Attendance Scanner
-            </label>
-          </div>
-
-          <div>
-            <button
-              type="submit"
-              disabled={busy}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold cursor-pointer"
-            >
-              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              Save Settings
-            </button>
-          </div>
-        </form>
-
-        <div className="lg:col-span-5 space-y-4">
-          <form onSubmit={handleAddAdmin} className="app-card rounded-2xl p-5 space-y-3">
-            <h3 className="font-display text-base font-bold text-gray-900">Add Admin</h3>
-            <input
-              type="text"
-              required
-              value={newUid}
-              onChange={(e) => setNewUid(e.target.value)}
-              placeholder="Firebase Auth User UID"
-              className={`${inputCls} font-mono text-xs`}
-            />
-            <input
-              type="email"
-              required
-              value={newEmail}
-              onChange={(e) => setNewEmail(e.target.value)}
-              placeholder="Admin Email"
-              className={inputCls}
-            />
-            <input
-              type="text"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              placeholder="Display Name"
-              className={inputCls}
-            />
-            <button
-              type="submit"
-              disabled={busy}
-              className="w-full py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold cursor-pointer"
-            >
-              Grant Admin Access
-            </button>
+            <div>
+              <button
+                type="submit"
+                disabled={busy}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold cursor-pointer"
+              >
+                {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                Save Settings
+              </button>
+            </div>
           </form>
 
-          <div className="app-card rounded-2xl p-5">
-            <h3 className="font-display text-sm font-bold text-gray-900 mb-3">
-              Authorized Admins ({admins.length})
-            </h3>
-            <div className="space-y-2">
-              {admins.map((a) => (
-                <div
-                  key={a.id}
-                  className="rounded-xl bg-gray-50 border border-gray-200 p-3 flex items-center justify-between gap-2"
-                >
-                  <div className="min-w-0">
-                    <p className="text-xs font-semibold text-gray-900 truncate">{a.displayName}</p>
-                    <p className="text-[11px] text-gray-500 truncate">{a.email}</p>
+          <div className="lg:col-span-5 space-y-4">
+            <form onSubmit={handleAddAdmin} className="app-card rounded-2xl p-5 space-y-3">
+              <h3 className="font-display text-base font-bold text-gray-900">Add Admin</h3>
+              <input
+                type="text"
+                required
+                value={newUid}
+                onChange={(e) => setNewUid(e.target.value)}
+                placeholder="Firebase Auth User UID"
+                className={`${inputCls} font-mono text-xs`}
+              />
+              <input
+                type="email"
+                required
+                value={newEmail}
+                onChange={(e) => setNewEmail(e.target.value)}
+                placeholder="Admin Email"
+                className={inputCls}
+              />
+              <input
+                type="text"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="Display Name"
+                className={inputCls}
+              />
+              <button
+                type="submit"
+                disabled={busy}
+                className="w-full py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold cursor-pointer"
+              >
+                Grant Admin Access
+              </button>
+            </form>
+
+            <div className="app-card rounded-2xl p-5">
+              <h3 className="font-display text-sm font-bold text-gray-900 mb-3">
+                Authorized Admins ({admins.length})
+              </h3>
+              <div className="space-y-2">
+                {admins.map((a) => (
+                  <div
+                    key={a.id}
+                    className="rounded-xl bg-gray-50 border border-gray-200 p-3 flex items-center justify-between gap-2"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-gray-900 truncate">{a.displayName}</p>
+                      <p className="text-[11px] text-gray-500 truncate">{a.email}</p>
+                    </div>
+                    {a.role !== 'owner' && (
+                      <button
+                        type="button"
+                        onClick={() => void removeAuthorizedAdmin(a.uid)}
+                        className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
-                  {a.role !== 'owner' && (
-                    <button
-                      type="button"
-                      onClick={() => void removeAuthorizedAdmin(a.uid)}
-                      className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 cursor-pointer"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      ) : (
+        /* =============================================================== */
+        /* ADMIN ID CARD & TEACHER PROFILE STUDIO (CR80 DOUBLE-SIDED)      */
+        /* =============================================================== */
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
+          {/* Left: Teacher Profile & Back Side Editor */}
+          <form onSubmit={handleSave} className="xl:col-span-6 app-card rounded-2xl p-5 space-y-4">
+            <div>
+              <h3 className="font-display text-base font-bold text-gray-900">
+                Teacher Profile (ID Card Back Side)
+              </h3>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Only verified details you enter below appear on the ID card back. Leave any optional contact or bio field blank to hide it.
+              </p>
+            </div>
+
+            {/* Teacher Photograph Upload (Strictly Admin-Uploaded — Never Stock) */}
+            <div className="rounded-2xl bg-gray-50 border border-gray-200 p-4 flex flex-col sm:flex-row items-start sm:items-center gap-4">
+              <div className="w-20 h-24 rounded-xl overflow-hidden border border-violet-200 bg-violet-50 flex items-center justify-center shrink-0">
+                {hasTeacherPhoto ? (
+                  <ResolvedImage
+                    url={form.teacherPhotoUrl}
+                    mediaId={form.teacherPhotoMediaId}
+                    alt={form.teacherName || 'Teacher Photograph'}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="text-center px-1.5">
+                    <ImageIcon className="w-6 h-6 text-violet-400 mx-auto" />
+                    <p className="text-[10px] font-semibold text-violet-700 mt-1 leading-tight">
+                      No Photo
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex-1 min-w-0 space-y-2">
+                <div>
+                  <p className="text-xs font-bold text-gray-900">Official Teacher Photograph</p>
+                  <p className="text-[11px] text-gray-500">
+                    Upload a real portrait photograph of {form.teacherName || 'SONU SIR #BABA'} for the ID Card back side.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold cursor-pointer transition-colors">
+                    {uploadingPhoto ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Upload className="w-3.5 h-3.5" />
+                    )}
+                    {uploadingPhoto
+                      ? 'Uploading...'
+                      : hasTeacherPhoto
+                      ? 'Change Teacher Photo'
+                      : 'Upload Teacher Photo'}
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      disabled={uploadingPhoto}
+                      onChange={(e) => {
+                        const f = e.target.files?.[0] || null;
+                        e.target.value = '';
+                        void handleTeacherPhotoUpload(f);
+                      }}
+                      className="hidden"
+                    />
+                  </label>
+                  {hasTeacherPhoto && (
+                    <button
+                      type="button"
+                      disabled={busy || uploadingPhoto}
+                      onClick={() => void handleRemoveTeacherPhoto()}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-red-50 border border-gray-200 text-xs font-semibold text-red-600 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Remove Photo
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Teacher Name</label>
+                <input
+                  type="text"
+                  required
+                  maxLength={100}
+                  value={form.teacherName}
+                  onChange={(e) => setForm({ ...form, teacherName: e.target.value })}
+                  placeholder="SONU SIR #BABA"
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  Institute Signature (Front Side)
+                </label>
+                <input
+                  type="text"
+                  maxLength={80}
+                  value={form.signatureText}
+                  onChange={(e) => setForm({ ...form, signatureText: e.target.value })}
+                  placeholder="Sonu Sir #Baba"
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  Subject Specialization (Optional)
+                </label>
+                <input
+                  type="text"
+                  maxLength={160}
+                  value={form.teacherSpecialization || ''}
+                  onChange={(e) => setForm({ ...form, teacherSpecialization: e.target.value })}
+                  placeholder="e.g., Physical, Organic & Inorganic Chemistry"
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  Teaching Experience (Optional)
+                </label>
+                <input
+                  type="text"
+                  maxLength={120}
+                  value={form.teacherExperience || ''}
+                  onChange={(e) => setForm({ ...form, teacherExperience: e.target.value })}
+                  placeholder="Enter verified experience if applicable"
+                  className={inputCls}
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Short Teacher Biography (Optional)
+              </label>
+              <textarea
+                rows={3}
+                maxLength={600}
+                value={form.teacherBio || ''}
+                onChange={(e) => setForm({ ...form, teacherBio: e.target.value })}
+                placeholder="Enter verified teacher introduction / teaching philosophy (leave blank to omit)."
+                className={inputCls}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  Contact Number (Optional)
+                </label>
+                <input
+                  type="text"
+                  maxLength={30}
+                  value={form.teacherContactNumber || ''}
+                  onChange={(e) => setForm({ ...form, teacherContactNumber: e.target.value })}
+                  placeholder="Verified phone"
+                  className={`${inputCls} font-mono`}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  WhatsApp Number (Optional)
+                </label>
+                <input
+                  type="text"
+                  maxLength={30}
+                  value={form.teacherWhatsappNumber || ''}
+                  onChange={(e) => setForm({ ...form, teacherWhatsappNumber: e.target.value })}
+                  placeholder="Verified WhatsApp"
+                  className={`${inputCls} font-mono`}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  Official Email (Optional)
+                </label>
+                <input
+                  type="email"
+                  maxLength={160}
+                  value={form.teacherEmail || ''}
+                  onChange={(e) => setForm({ ...form, teacherEmail: e.target.value })}
+                  placeholder="Verified email"
+                  className={inputCls}
+                />
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <label className="block text-xs font-medium text-gray-700">
+                  Motivational Message for Students (Back Side)
+                </label>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setForm({
+                      ...form,
+                      idCardMotivationalMessage: DEFAULT_ID_CARD_MOTIVATIONAL_MESSAGE,
+                    })
+                  }
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-violet-700 hover:underline cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  Reset Default Quote
+                </button>
+              </div>
+              <textarea
+                rows={4}
+                maxLength={600}
+                value={
+                  form.idCardMotivationalMessage !== undefined &&
+                  form.idCardMotivationalMessage !== ''
+                    ? form.idCardMotivationalMessage
+                    : DEFAULT_ID_CARD_MOTIVATIONAL_MESSAGE
+                }
+                onChange={(e) =>
+                  setForm({ ...form, idCardMotivationalMessage: e.target.value })
+                }
+                className={inputCls}
+              />
+            </div>
+
+            <div className="pt-1 flex flex-wrap items-center gap-2.5">
+              <button
+                type="submit"
+                disabled={busy || uploadingPhoto}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-60 text-white text-sm font-semibold cursor-pointer"
+              >
+                {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                Save ID Card Teacher Profile
+              </button>
+            </div>
+          </form>
+
+          {/* Right: Live CR80 Front + Back Preview, PDF Download & Print Studio */}
+          <div className="xl:col-span-6 app-card rounded-2xl p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div>
+                <h3 className="font-display text-base font-bold text-gray-900">
+                  Live Double-Sided CR80 Preview
+                </h3>
+                <p className="text-[11px] text-gray-500 flex items-center gap-1 mt-0.5">
+                  <Layers className="w-3.5 h-3.5 text-violet-600" />
+                  Exact physical CR80: {CR80_WIDTH_MM.toFixed(2)} mm × {CR80_HEIGHT_MM.toFixed(2)} mm
+                </p>
+              </div>
+
+              <div className="inline-flex p-1 rounded-xl bg-gray-100 border border-gray-200 self-start">
+                {(
+                  [
+                    { id: 'both', label: 'Both' },
+                    { id: 'front', label: 'Front' },
+                    { id: 'back', label: 'Back' },
+                  ] as const
+                ).map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setPreviewSide(t.id)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold cursor-pointer ${
+                      previewSide === t.id
+                        ? 'bg-white text-violet-700 shadow-2xs'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Select Approved Student for Live Preview */}
+            <div>
+              <label className="block text-[11px] font-medium text-gray-600 mb-1">
+                Preview Student Record
+              </label>
+              {students.length > 0 ? (
+                <select
+                  value={previewStudent.studentId}
+                  onChange={(e) => setPreviewStudentId(e.target.value)}
+                  className={inputCls}
+                >
+                  {students.map((s) => (
+                    <option key={s.studentId} value={s.studentId}>
+                      {s.studentName} ({s.studentId} · {s.studentClass})
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="rounded-xl bg-gray-50 border border-gray-200 px-3 py-2 text-xs text-gray-500">
+                  Showing layout sample (no approved students yet). Once a student is approved, select them here to preview and print their card.
+                </div>
+              )}
+            </div>
+
+            {/* Card Canvases */}
+            {renderingPreview && !previewFrontUrl ? (
+              <div className="aspect-[1348/850] rounded-2xl bg-gray-50 border border-gray-200 flex flex-col items-center justify-center text-gray-500">
+                <Loader2 className="w-6 h-6 animate-spin text-violet-600 mb-2" />
+                <p className="text-xs">Rendering CR80 preview...</p>
+              </div>
+            ) : (
+              <div className="space-y-3.5">
+                {(previewSide === 'both' || previewSide === 'front') && previewFrontUrl && (
+                  <div className="space-y-1">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-violet-700">
+                      Front Side — Student Details
+                    </p>
+                    <img
+                      src={previewFrontUrl}
+                      alt="Front Side CR80 ID Card Preview"
+                      className="w-full aspect-[1348/850] rounded-xl border border-gray-200 shadow-xs bg-white"
+                    />
+                  </div>
+                )}
+                {(previewSide === 'both' || previewSide === 'back') && previewBackUrl && (
+                  <div className="space-y-1">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-violet-700">
+                      Back Side — Meet Your Teacher
+                    </p>
+                    <img
+                      src={previewBackUrl}
+                      alt="Back Side CR80 ID Card Preview"
+                      className="w-full aspect-[1348/850] rounded-xl border border-gray-200 shadow-xs bg-white"
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Export & Duplex Print Actions */}
+            <div className="pt-1 flex flex-wrap items-center gap-2.5">
+              <button
+                type="button"
+                disabled={downloadingPdf || !previewFrontUrl}
+                onClick={() => void handleDownloadPreviewPdf()}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-60 text-white text-xs font-semibold cursor-pointer"
+              >
+                {downloadingPdf ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <FileText className="w-3.5 h-3.5" />
+                )}
+                Download Complete ID Card PDF
+              </button>
+              <button
+                type="button"
+                disabled={!previewFrontUrl || !previewBackUrl}
+                onClick={handlePrintPreviewBothSides}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-white hover:bg-gray-100 border border-gray-200 disabled:opacity-60 text-gray-800 text-xs font-semibold cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5 text-violet-600" />
+                Print Both Sides
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* In-DOM Print Portal for Admin ID Card Studio CR80 Duplex Printing */}
+      {subTab === 'idcard' &&
+        previewFrontUrl &&
+        previewBackUrl &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div className="print-only-id-sheets" aria-hidden="true">
+            <div className="cr80-print-page">
+              <p
+                style={{
+                  fontSize: '10px',
+                  fontWeight: 700,
+                  color: '#6D28D9',
+                  marginBottom: '6mm',
+                  fontFamily: 'sans-serif',
+                  letterSpacing: '0.06em',
+                }}
+              >
+                FRONT SIDE — STUDENT DETAILS ({previewStudent.studentId}) · CR80 85.60 × 53.98 mm
+              </p>
+              <img src={previewFrontUrl} alt="" className="cr80-card-physical" />
+            </div>
+            <div className="cr80-print-page">
+              <p
+                style={{
+                  fontSize: '10px',
+                  fontWeight: 700,
+                  color: '#6D28D9',
+                  marginBottom: '6mm',
+                  fontFamily: 'sans-serif',
+                  letterSpacing: '0.06em',
+                }}
+              >
+                BACK SIDE — MEET YOUR TEACHER ({form.teacherName}) · CR80 85.60 × 53.98 mm
+              </p>
+              <img src={previewBackUrl} alt="" className="cr80-card-physical" />
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

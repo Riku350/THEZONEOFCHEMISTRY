@@ -14,7 +14,9 @@
 11. **Authoritative QR & Manual Attendance**: `/attendance/{attendanceId}` is admin-only for reads and writes, uses deterministic ID `att_<studentId>_<batchId>_<YYYY-MM-DD>` to prevent duplicate daily records per student/batch, enforces `exists(/students/<studentId>)`, enforces `status == 'active'` for QR attendance, and locks `createdAt`, `updatedAt`, and QR `entryTime`/`exitTime` strictly to `request.time`.
 12. **Immutable Attendance Audit Trail**: `/attendanceAuditLogs/{logId}` is admin-only create/read and permanently immutable (`allow update, delete: if false;`), enforcing mandatory `reason` (3–400 chars) and `modifiedAt == request.time`.
 13. **Public Non-PII Holiday Calendar**: `/attendanceHolidays/{holidayId}` stores only non-PII holiday and not-scheduled class date overrides (admin write only, public read) so student calendars accurately exclude holidays/non-scheduled dates from absence totals.
-14. **OTP-Gated Yearly Student Attendance Ledger**: `/studentAttendancePublic/{attendanceKey}` is keyed by `attpub_<SHA-256(studentId:mobile)>_<year>`, allows single-document `get` only (never public `list`), is admin-written only, and is fetched exclusively after server-verified OTP confirmation.
+14. **Direct Yearly Student Attendance Ledger**: `/studentAttendancePublic/{attendanceKey}` is keyed by `attid_<SHA-256(studentId)>_<year>` (with legacy `attpub_<SHA-256(studentId:mobile)>_<year>` fallback), allows single-document `get` only (never public `list`), and is strictly admin-written.
+15. **Admin-Managed Teacher ID Card Profile**: Teacher photograph, biography, specialization, experience, contact details, and motivational message stored in `/settings/main` (and photo fallback in `/publicMedia/{mediaId}`) are strictly admin-write only with strict `.size()` limits, while allowing public single-document `get` for authorized ID card rendering.
+16. **Privacy-Minimized Direct Attendance Lookup Index**: `/attendanceLookupIndex/{lookupKey}` is keyed by `attmob_<SHA-256(10DigitMobile)>` or `attid_<SHA-256(UPPERCASE_STUDENT_ID)>`, strictly admin-written only for **approved and active** students (suspended/pending/rejected records are excluded or removed), allows single-document `get` only (never public `list`), and exposes only attendance-display fields (`studentId`, `studentName`, `fatherName`, `studentClass`, `course`, `batch`, `maskedMobile`, `photoUrl`, `photoDataUrl`, `enrolledDate`, `attendanceKeyHash`) with zero raw mobile, address, fee, payment, security code, or QR token exposure.
 
 ## 2. The "Dirty Dozen" Adversarial Payloads
 1. **Self-Approved Application**: Public applicant submits `/applications/ZOC2026-9999` with `status: "approved"`. Expected: `PERMISSION_DENIED`.
@@ -34,5 +36,10 @@
 15. **Self-Marked Attendance Forgery**: Unauthenticated or non-admin user attempts to create `/attendance/{attendanceId}` with `attendanceStatus: "Present"`. Expected: `PERMISSION_DENIED`.
 16. **Suspended Student QR Attendance**: Admin client attempts QR attendance (`source: "qr"`) for a student whose `/students/{studentId}` has `status == "suspended"`. Expected: `PERMISSION_DENIED`.
 17. **Audit Log Deletion / Tampering**: Even an authenticated admin attempts `update` or `delete` on `/attendanceAuditLogs/{logId}`. Expected: `PERMISSION_DENIED`.
-18. **Public Attendance Enumeration**: Unauthenticated visitor runs `list` on `/attendance` or `/studentAttendancePublic`. Expected: `PERMISSION_DENIED`.
+18. **Public Attendance Enumeration**: Unauthenticated visitor runs `list` on `/attendance`, `/studentAttendancePublic`, or `/attendanceLookupIndex`. Expected: `PERMISSION_DENIED`.
+19. **Unauthorized Teacher Profile Overwrite / Oversized Bio**: Unauthenticated caller or oversized `teacherBio` (>600 chars) attempts write to `/settings/main`. Expected: `PERMISSION_DENIED`.
+20. **Forged Attendance Lookup Index Write**: Unauthenticated caller attempts `create` or `update` on `/attendanceLookupIndex/attmob_<hash>` to inject a fake active student record. Expected: `PERMISSION_DENIED`.
+21. **Attendance Lookup Index PII Smuggling**: Admin or caller attempts to write unauthorized extra keys (`feeAmount`, `securityCode`, `address`, `studentMobile`) into `/attendanceLookupIndex/{lookupKey}` entry map. Expected: `PERMISSION_DENIED`.
+
+
 

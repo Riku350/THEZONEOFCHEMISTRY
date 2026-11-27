@@ -343,6 +343,15 @@
         "address": { "type": "string", "maxLength": 300 },
         "signatureText": { "type": "string", "maxLength": 80 },
         "attendanceExitTracking": { "type": "boolean" },
+        "teacherPhotoUrl": { "type": "string", "maxLength": 2000 },
+        "teacherPhotoMediaId": { "type": "string", "maxLength": 128 },
+        "teacherBio": { "type": "string", "maxLength": 600 },
+        "teacherExperience": { "type": "string", "maxLength": 120 },
+        "teacherSpecialization": { "type": "string", "maxLength": 160 },
+        "teacherContactNumber": { "type": "string", "maxLength": 30 },
+        "teacherWhatsappNumber": { "type": "string", "maxLength": 30 },
+        "teacherEmail": { "type": "string", "maxLength": 160 },
+        "idCardMotivationalMessage": { "type": "string", "maxLength": 600 },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["instituteName", "teacherName", "defaultFee", "admissionsOpen", "updatedAt"]
@@ -501,7 +510,7 @@
     },
     "StudentAttendancePublic": {
       "title": "StudentAttendancePublic",
-      "description": "OTP-gated yearly attendance ledger keyed by SHA-256(studentId:mobile)_year for zero-login student attendance tracking.",
+      "description": "Yearly attendance ledger keyed by attid_sha256(studentId)_year (and legacy attpub_sha256(studentId:mobile)_year) for direct no-login student attendance tracking.",
       "type": "object",
       "properties": {
         "studentId": { "type": "string", "minLength": 4, "maxLength": 64 },
@@ -514,6 +523,17 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["studentId", "year", "batchId", "batchTiming", "scheduledDays", "records", "updatedAt"]
+    },
+    "AttendanceLookupIndex": {
+      "title": "AttendanceLookupIndex",
+      "description": "Privacy-minimized SHA-256 keyed lookup index of ONLY approved and active students for direct no-OTP attendance tracking (never contains raw mobile, fees, address, security codes, QR tokens, or pending/rejected/suspended students).",
+      "type": "object",
+      "properties": {
+        "lookupType": { "type": "string", "enum": ["id", "mobile"] },
+        "entries": { "type": "array", "description": "Bounded array (1..10) of active approved student attendance summaries." },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["lookupType", "entries", "updatedAt"]
     }
   },
   "firestore": {
@@ -603,7 +623,11 @@
     },
     "/studentAttendancePublic/{attendanceKey}": {
       "schema": { "$ref": "#/entities/StudentAttendancePublic" },
-      "description": "OTP-gated yearly student attendance ledger keyed by attpub_sha256(studentId:mobile)_year."
+      "description": "Yearly student attendance ledger keyed by attid_sha256(studentId)_year (and legacy attpub_sha256(studentId:mobile)_year)."
+    },
+    "/attendanceLookupIndex/{lookupKey}": {
+      "schema": { "$ref": "#/entities/AttendanceLookupIndex" },
+      "description": "Privacy-minimized SHA-256 lookup index of approved and active students only for direct no-OTP attendance tracking."
     }
   }
 }

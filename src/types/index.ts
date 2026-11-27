@@ -277,6 +277,15 @@ export interface InstituteSettings {
   address: string;
   signatureText: string;
   attendanceExitTracking?: boolean;
+  teacherPhotoUrl?: string;
+  teacherPhotoMediaId?: string;
+  teacherBio?: string;
+  teacherExperience?: string;
+  teacherSpecialization?: string;
+  teacherContactNumber?: string;
+  teacherWhatsappNumber?: string;
+  teacherEmail?: string;
+  idCardMotivationalMessage?: string;
   updatedAt?: TimestampLike | null;
 }
 
@@ -351,6 +360,29 @@ export interface StudentAttendancePublicDoc {
   enrolledDate?: string;
   scheduledDays: number[];
   records: Record<string, StudentAttendanceDayEntry>;
+  updatedAt: TimestampLike | null;
+}
+
+export interface AttendanceLookupEntry {
+  studentId: string;
+  studentName: string;
+  fatherName: string;
+  studentClass: string;
+  course: string;
+  batch: string;
+  maskedMobile: string;
+  photoUrl?: string;
+  photoDataUrl?: string;
+  enrolledDate?: string;
+  attendanceKeyHash: string;
+  /** Internal client-only fallback for pre-backfill legacy attpub_ ledgers (never persisted to Firestore). */
+  _legacyMobile?: string;
+}
+
+export interface AttendanceLookupIndexDoc {
+  id: string;
+  lookupType: 'id' | 'mobile';
+  entries: AttendanceLookupEntry[];
   updatedAt: TimestampLike | null;
 }
 

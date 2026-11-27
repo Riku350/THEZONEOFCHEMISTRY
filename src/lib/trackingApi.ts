@@ -1,0 +1,277 @@
+// Shared, fail-closed client helpers for server-side rate-limiting and OTP verification
+
+export type RateLimitResult =
+  | { ok: true; remaining: number }
+  | { ok: false; reason: 'rate_limited'; retryAfterSeconds: number; message: string }
+  | { ok: false; reason: 'invalid_request' | 'service_unavailable'; status?: number; message: string };
+
+export type OtpRequestResult =
+  | {
+      ok: true;
+      challengeId: string;
+      expiresAt: number;
+      expiresInSeconds: number;
+      cooldownSeconds: number;
+      deliveryMode: 'sms' | 'preview';
+      maskedMobile: string;
+      previewOtp?: string;
+    }
+  | {
+      ok: false;
+      code: string;
+      retryAfterSeconds?: number;
+      message: string;
+    };
+
+export type OtpVerifyResult =
+  | { ok: true; verificationToken: string }
+  | {
+      ok: false;
+      code: string;
+      attemptsLeft?: number;
+      message: string;
+    };
+
+async function fetchJsonWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs = 10000
+): Promise<{ response: Response; json: Record<string, unknown> | null; isJson: boolean }> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...init,
+      credentials: 'same-origin',
+      cache: 'no-store',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+        ...(init.headers || {}),
+      },
+    });
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+    const isJson = contentType.includes('application/json');
+    if (!isJson) {
+      return { response, json: null, isJson: false };
+    }
+    const json = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+    return { response, json, isJson: json !== null };
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+function delayMs(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+/**
+ * Checks the authoritative server-side sliding-window rate limiter.
+ * Strictly FAIL-CLOSED: if the rate-limit service is unreachable or returns a non-JSON
+ * or 5xx error (after one brief transient retry), returns service_unavailable so no
+ * student records are ever queried or exposed without rate-limit verification.
+ */
+export async function checkSearchRateLimit(
+  mode: 'id' | 'mobile',
+  scope: 'attendance' | 'admission'
+): Promise<RateLimitResult> {
+  const maxAttempts = 2;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const { response, json, isJson } = await fetchJsonWithTimeout('/api/tracking/rate-limit', {
+        method: 'POST',
+        body: JSON.stringify({ mode, scope }),
+      });
+
+      if (response.status === 429 && isJson && json) {
+        const waitSec = Math.max(1, Number(json.retryAfterSeconds) || 30);
+        return {
+          ok: false,
+          reason: 'rate_limited',
+          retryAfterSeconds: waitSec,
+          message:
+            typeof json.error === 'string' && json.error
+              ? json.error
+              : `Too many search attempts. Please wait ${waitSec} seconds before retrying.`,
+        };
+      }
+
+      if (response.status === 400 && isJson && json) {
+        return {
+          ok: false,
+          reason: 'invalid_request',
+          status: 400,
+          message:
+            typeof json.error === 'string' && json.error
+              ? json.error
+              : 'Invalid search request. Please check your input.',
+        };
+      }
+
+      if (response.ok && isJson && json && json.allowed === true) {
+        return {
+          ok: true,
+          remaining: typeof json.remaining === 'number' ? json.remaining : 0,
+        };
+      }
+
+      // Transient proxy/cold-start error -> retry once before failing closed
+      const isTransient =
+        response.status === 502 ||
+        response.status === 503 ||
+        response.status === 504 ||
+        !isJson;
+      if (isTransient && attempt < maxAttempts) {
+        await delayMs(450);
+        continue;
+      }
+
+      return {
+        ok: false,
+        reason: 'service_unavailable',
+        status: response.status,
+        message:
+          'Rate-limit verification service is temporarily unavailable. For student privacy, search is paused. Please try again in a moment.',
+      };
+    } catch {
+      if (attempt < maxAttempts) {
+        await delayMs(450);
+        continue;
+      }
+      return {
+        ok: false,
+        reason: 'service_unavailable',
+        message:
+          'Unable to reach the verification service. Please check your internet connection and try again.',
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    reason: 'service_unavailable',
+    message:
+      'Rate-limit verification service is temporarily unavailable. For student privacy, search is paused. Please try again in a moment.',
+  };
+}
+
+export async function requestTrackingOtp(params: {
+  mobile: string;
+  mobileHash: string;
+}): Promise<OtpRequestResult> {
+  try {
+    const { response, json, isJson } = await fetchJsonWithTimeout('/api/tracking/otp/request', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+
+    if (!isJson || !json) {
+      return {
+        ok: false,
+        code: 'SERVICE_UNAVAILABLE',
+        message: 'OTP verification service is temporarily unavailable. Please try again shortly.',
+      };
+    }
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        code: typeof json.code === 'string' ? json.code : `HTTP_${response.status}`,
+        retryAfterSeconds:
+          typeof json.retryAfterSeconds === 'number' ? json.retryAfterSeconds : undefined,
+        message:
+          typeof json.error === 'string' && json.error
+            ? json.error
+            : 'Could not send verification OTP. Please try again.',
+      };
+    }
+
+    return {
+      ok: true,
+      challengeId: String(json.challengeId || ''),
+      expiresAt:
+        typeof json.expiresAt === 'number'
+          ? json.expiresAt
+          : Date.now() + (Number(json.expiresInSeconds) || 300) * 1000,
+      expiresInSeconds: Number(json.expiresInSeconds) || 300,
+      cooldownSeconds: Number(json.cooldownSeconds) || 30,
+      deliveryMode: json.deliveryMode === 'sms' ? 'sms' : 'preview',
+      maskedMobile: String(json.maskedMobile || ''),
+      previewOtp: typeof json.previewOtp === 'string' ? json.previewOtp : undefined,
+    };
+  } catch {
+    return {
+      ok: false,
+      code: 'NETWORK_ERROR',
+      message: 'Network error while requesting OTP. Please check your connection and try again.',
+    };
+  }
+}
+
+export async function verifyTrackingOtp(params: {
+  challengeId: string;
+  otp: string;
+  mobileHash: string;
+}): Promise<OtpVerifyResult> {
+  try {
+    const { response, json, isJson } = await fetchJsonWithTimeout('/api/tracking/otp/verify', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+
+    if (!isJson || !json) {
+      return {
+        ok: false,
+        code: 'SERVICE_UNAVAILABLE',
+        message: 'OTP verification service is temporarily unavailable. Please try again shortly.',
+      };
+    }
+
+    if (!response.ok || json.verified !== true) {
+      return {
+        ok: false,
+        code: typeof json.code === 'string' ? json.code : `HTTP_${response.status}`,
+        attemptsLeft: typeof json.attemptsLeft === 'number' ? json.attemptsLeft : undefined,
+        message:
+          typeof json.error === 'string' && json.error
+            ? json.error
+            : 'Invalid or expired OTP. Please try again.',
+      };
+    }
+
+    return {
+      ok: true,
+      verificationToken: String(json.verificationToken || ''),
+    };
+  } catch {
+    return {
+      ok: false,
+      code: 'NETWORK_ERROR',
+      message: 'Unable to reach verification server. Please check your connection and retry.',
+    };
+  }
+}
+
+/**
+ * Classifies Firestore connectivity / offline / backend errors so UI can display an
+ * accurate Firebase service error instead of mistaking an outage for "no records".
+ */
+export function isFirebaseUnavailableError(err: unknown): boolean {
+  const msg =
+    err instanceof Error ? err.message.toLowerCase() : String(err ?? '').toLowerCase();
+  return (
+    msg.includes('offline') ||
+    msg.includes('unavailable') ||
+    msg.includes('network') ||
+    msg.includes('failed to get document') ||
+    msg.includes('deadline-exceeded') ||
+    msg.includes('could not reach cloud firestore') ||
+    msg.includes('permission-denied') ||
+    msg.includes('permission_denied') ||
+    msg.includes('quota')
+  );
+}

@@ -26,6 +26,12 @@ import {
 } from '../lib/firestoreService';
 import { downloadIdCardPdf } from '../lib/idCardRenderer';
 import {
+  checkSearchRateLimit,
+  isFirebaseUnavailableError,
+  requestTrackingOtp,
+  verifyTrackingOtp,
+} from '../lib/trackingApi';
+import {
   AdmissionStage,
   InstituteSettings,
   StudentRecord,
@@ -129,6 +135,8 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
   const [otpPreviewCode, setOtpPreviewCode] = useState('');
   const [otpDeliveryMode, setOtpDeliveryMode] = useState<'sms' | 'preview' | ''>('');
   const [otpCooldown, setOtpCooldown] = useState(0);
+  const [otpExpiresAt, setOtpExpiresAt] = useState<number | null>(null);
+  const [otpSecondsLeft, setOtpSecondsLeft] = useState(0);
   const [otpSending, setOtpSending] = useState(false);
   const [otpVerifying, setOtpVerifying] = useState(false);
   const [otpError, setOtpError] = useState('');
@@ -157,6 +165,19 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
     return () => window.clearInterval(t);
   }, [otpCooldown]);
 
+  useEffect(() => {
+    if (!otpExpiresAt || !otpChallengeId) {
+      setOtpSecondsLeft(0);
+      return;
+    }
+    const updateRemaining = () => {
+      setOtpSecondsLeft(Math.max(0, Math.ceil((otpExpiresAt - Date.now()) / 1000)));
+    };
+    updateRemaining();
+    const t = window.setInterval(updateRemaining, 1000);
+    return () => window.clearInterval(t);
+  }, [otpExpiresAt, otpChallengeId]);
+
   const resetResults = () => {
     setErrorMsg('');
     setNotFound(false);
@@ -167,6 +188,8 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
     setOtpInput('');
     setOtpPreviewCode('');
     setOtpDeliveryMode('');
+    setOtpExpiresAt(null);
+    setOtpSecondsLeft(0);
     setOtpError('');
     setVerifiedMobile('');
     setVerifiedProfile(null);
@@ -201,28 +224,13 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
 
     setSearching(true);
     try {
-      // 1. Server-side sliding-window rate limit check
-      const rlRes = await fetch('/api/tracking/rate-limit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode }),
-      });
-
-      if (rlRes.status === 429) {
-        const data = (await rlRes.json().catch(() => ({}))) as {
-          error?: string;
-          retryAfterSeconds?: number;
-        };
-        const waitSec = Number(data.retryAfterSeconds) || 30;
-        setRateLimitCountdown(waitSec);
-        setErrorMsg(
-          data.error || `Too many search attempts. Please wait ${waitSec} seconds before retrying.`
-        );
-        return;
-      }
-
-      if (!rlRes.ok) {
-        setErrorMsg('Unable to verify request rate limit. Please try again.');
+      // 1. Fail-closed server-side sliding-window rate limit check
+      const rl = await checkSearchRateLimit(mode, 'admission');
+      if (!rl.ok) {
+        if (rl.reason === 'rate_limited') {
+          setRateLimitCountdown(rl.retryAfterSeconds);
+        }
+        setErrorMsg(rl.message);
         return;
       }
 
@@ -248,7 +256,11 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
       }
     } catch (err) {
       console.error('Admission tracking lookup error:', err);
-      setErrorMsg('Unable to connect to verification service right now. Please try again.');
+      setErrorMsg(
+        isFirebaseUnavailableError(err)
+          ? 'Admission database is temporarily unreachable. Please check your connection and try again shortly.'
+          : 'Unable to connect to verification service right now. Please try again.'
+      );
     } finally {
       setSearching(false);
     }
@@ -276,39 +288,25 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
 
     setOtpSending(true);
     try {
-      const res = await fetch('/api/tracking/otp/request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mobile: candidateMobile,
-          mobileHash: indexDoc.mobileHash,
-        }),
+      const res = await requestTrackingOtp({
+        mobile: candidateMobile,
+        mobileHash: indexDoc.mobileHash,
       });
-      const data = (await res.json().catch(() => ({}))) as {
-        challengeId?: string;
-        cooldownSeconds?: number;
-        deliveryMode?: 'sms' | 'preview';
-        previewOtp?: string;
-        error?: string;
-        retryAfterSeconds?: number;
-      };
 
-      if (!res.ok || !data.challengeId) {
-        if (data.retryAfterSeconds) {
-          setOtpCooldown(Number(data.retryAfterSeconds));
+      if (!res.ok) {
+        if (res.retryAfterSeconds) {
+          setOtpCooldown(res.retryAfterSeconds);
         }
-        setOtpError(data.error || 'Could not send OTP right now. Please try again.');
+        setOtpError(res.message);
         return;
       }
 
-      setOtpChallengeId(data.challengeId);
-      setOtpDeliveryMode(data.deliveryMode || 'sms');
-      setOtpPreviewCode(data.previewOtp || '');
-      setOtpCooldown(Number(data.cooldownSeconds) || 30);
+      setOtpChallengeId(res.challengeId);
+      setOtpDeliveryMode(res.deliveryMode);
+      setOtpPreviewCode(res.previewOtp || '');
+      setOtpCooldown(res.cooldownSeconds);
+      setOtpExpiresAt(res.expiresAt);
       setOtpInput('');
-    } catch (err) {
-      console.error('OTP request failed:', err);
-      setOtpError('Network error while sending OTP. Please try again.');
     } finally {
       setOtpSending(false);
     }
@@ -317,6 +315,11 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
   const handleVerifyOtp = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!indexDoc || !selectedEntry || !otpChallengeId || otpVerifying) return;
+
+    if (otpExpiresAt && Date.now() >= otpExpiresAt) {
+      setOtpError('This OTP has expired. Please click Resend OTP to receive a new code.');
+      return;
+    }
 
     const cleanOtp = otpInput.replace(/[^0-9]/g, '');
     if (cleanOtp.length !== 6) {
@@ -327,22 +330,18 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
     setOtpError('');
     setOtpVerifying(true);
     try {
-      const res = await fetch('/api/tracking/otp/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          challengeId: otpChallengeId,
-          otp: cleanOtp,
-          mobileHash: indexDoc.mobileHash,
-        }),
+      const verifyRes = await verifyTrackingOtp({
+        challengeId: otpChallengeId,
+        otp: cleanOtp,
+        mobileHash: indexDoc.mobileHash,
       });
-      const data = (await res.json().catch(() => ({}))) as {
-        verified?: boolean;
-        error?: string;
-      };
 
-      if (!res.ok || !data.verified) {
-        setOtpError(data.error || 'Incorrect OTP. Please try again.');
+      if (!verifyRes.ok) {
+        if (verifyRes.code === 'OTP_EXPIRED' || verifyRes.code === 'OTP_LOCKED') {
+          setOtpExpiresAt(0);
+          setOtpSecondsLeft(0);
+        }
+        setOtpError(verifyRes.message);
         return;
       }
 
@@ -363,7 +362,11 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
       setOtpPreviewCode('');
     } catch (err) {
       console.error('OTP verify failed:', err);
-      setOtpError('Unable to verify OTP right now. Please try again.');
+      setOtpError(
+        isFirebaseUnavailableError(err)
+          ? 'OTP verified, but Firebase is temporarily unavailable while loading your record. Please retry.'
+          : 'Unable to verify OTP right now. Please try again.'
+      );
     } finally {
       setOtpVerifying(false);
     }
@@ -799,7 +802,16 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
                   )}
 
                   <div className="flex items-center justify-between text-xs text-gray-500">
-                    <span>Code valid for 5 minutes</span>
+                    {otpSecondsLeft > 0 ? (
+                      <span className="font-mono tabular-nums">
+                        Expires in {String(Math.floor(otpSecondsLeft / 60)).padStart(2, '0')}:
+                        {String(otpSecondsLeft % 60).padStart(2, '0')}
+                      </span>
+                    ) : (
+                      <span className="text-red-600 font-semibold">
+                        OTP expired. Click Resend OTP.
+                      </span>
+                    )}
                     <button
                       type="button"
                       disabled={otpSending || otpCooldown > 0}
@@ -955,7 +967,7 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
                     ) : (
                       <>
                         <Download className="w-4 h-4" />
-                        DOWNLOAD ID CARD PDF
+                        DOWNLOAD COMPLETE ID CARD PDF
                       </>
                     )}
                   </button>

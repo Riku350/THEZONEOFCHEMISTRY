@@ -337,7 +337,11 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'instituteName', 'teacherName', 'tagline', 'academicSession', 'defaultFee',
           'admissionsOpen', 'admissionHeadline', 'phone', 'whatsappNumber', 'email',
-          'address', 'signatureText', 'attendanceExitTracking', 'updatedAt'
+          'address', 'signatureText', 'attendanceExitTracking',
+          'teacherPhotoUrl', 'teacherPhotoMediaId', 'teacherBio', 'teacherExperience',
+          'teacherSpecialization', 'teacherContactNumber', 'teacherWhatsappNumber',
+          'teacherEmail', 'idCardMotivationalMessage',
+          'updatedAt'
         ])
         && isValidString(data.instituteName, 2, 120)
         && isValidString(data.teacherName, 2, 120)
@@ -352,6 +356,15 @@ service cloud.firestore {
         && isOptionalString(data, 'address', 300)
         && isOptionalString(data, 'signatureText', 80)
         && (!('attendanceExitTracking' in data) || data.attendanceExitTracking is bool)
+        && isOptionalString(data, 'teacherPhotoUrl', 2000)
+        && isOptionalString(data, 'teacherPhotoMediaId', 128)
+        && isOptionalString(data, 'teacherBio', 600)
+        && isOptionalString(data, 'teacherExperience', 120)
+        && isOptionalString(data, 'teacherSpecialization', 160)
+        && isOptionalString(data, 'teacherContactNumber', 30)
+        && isOptionalString(data, 'teacherWhatsappNumber', 30)
+        && isOptionalString(data, 'teacherEmail', 160)
+        && isOptionalString(data, 'idCardMotivationalMessage', 600)
         && data.updatedAt is timestamp;
     }
 
@@ -496,6 +509,44 @@ service cloud.firestore {
         && (!('enrolledDate' in data) || data.enrolledDate == '' || isValidDateString(data.enrolledDate))
         && isValidWeekdayList(data.scheduledDays)
         && data.records is map && data.records.size() <= 366
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAttendanceLookupEntry(entry) {
+      return entry is map
+        && entry.keys().hasAll([
+          'studentId', 'studentName', 'fatherName', 'studentClass',
+          'course', 'batch', 'maskedMobile', 'attendanceKeyHash'
+        ])
+        && entry.keys().hasOnly([
+          'studentId', 'studentName', 'fatherName', 'studentClass',
+          'course', 'batch', 'maskedMobile', 'photoUrl', 'photoDataUrl',
+          'enrolledDate', 'attendanceKeyHash'
+        ])
+        && isValidString(entry.studentId, 4, 64) && entry.studentId.matches('^[a-zA-Z0-9_\\-]+$')
+        && isValidString(entry.studentName, 2, 120)
+        && isValidString(entry.fatherName, 1, 120)
+        && isValidString(entry.studentClass, 1, 40)
+        && isValidString(entry.course, 2, 100)
+        && isValidString(entry.batch, 2, 80)
+        && isValidString(entry.maskedMobile, 4, 20)
+        && isOptionalString(entry, 'photoUrl', 2000)
+        && isOptionalString(entry, 'photoDataUrl', 250000)
+        && (!('enrolledDate' in entry) || entry.enrolledDate == '' || isValidDateString(entry.enrolledDate))
+        && entry.attendanceKeyHash is string
+        && entry.attendanceKeyHash.size() == 64
+        && entry.attendanceKeyHash.matches('^[a-f0-9]{64}$');
+    }
+
+    function isValidAttendanceLookupIndex(data) {
+      return data.keys().hasAll(['lookupType', 'entries', 'updatedAt'])
+        && data.keys().hasOnly(['lookupType', 'entries', 'updatedAt'])
+        && (data.lookupType in ['id', 'mobile'])
+        && data.entries is list
+        && data.entries.size() >= 1
+        && data.entries.size() <= 10
+        && isValidAttendanceLookupEntry(data.entries[0])
+        && isValidAttendanceLookupEntry(data.entries[data.entries.size() - 1])
         && data.updatedAt is timestamp;
     }
 
@@ -823,6 +874,16 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && isAdmin();
       allow delete: if isValidId(attendanceKey) && isAdmin();
+    }
+
+    match /attendanceLookupIndex/{lookupKey} {
+      allow get: if isValidId(lookupKey);
+      allow list: if isAdmin();
+      allow create, update: if isValidId(lookupKey)
+        && isValidAttendanceLookupIndex(incoming())
+        && incoming().updatedAt == request.time
+        && isAdmin();
+      allow delete: if isValidId(lookupKey) && isAdmin();
     }
   }
 }
