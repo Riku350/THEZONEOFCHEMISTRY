@@ -4,6 +4,7 @@ import {
   Bell,
   BookOpen,
   Calendar,
+  CalendarCheck,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -15,6 +16,7 @@ import {
   X,
 } from 'lucide-react';
 import { ASSETS } from '../config/defaults';
+import { formatScheduledDaysSummary } from '../lib/attendanceUtils';
 import {
   BannerItem,
   BatchItem,
@@ -102,6 +104,14 @@ export const HomePage: React.FC<HomePageProps> = ({
             </button>
             <button
               type="button"
+              onClick={() => onNavigate('attendance')}
+              className="inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-white hover:bg-gray-50 border border-gray-200 text-gray-800 text-sm font-medium transition-colors whitespace-nowrap cursor-pointer"
+            >
+              <CalendarCheck className="w-4 h-4 text-violet-600" />
+              My Attendance
+            </button>
+            <button
+              type="button"
               onClick={() => onNavigate('track')}
               className="inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-white hover:bg-gray-50 border border-gray-200 text-gray-800 text-sm font-medium transition-colors whitespace-nowrap cursor-pointer"
             >
@@ -173,6 +183,36 @@ export const HomePage: React.FC<HomePageProps> = ({
 
         {/* 2B. TRACK MY ADMISSION (Zero-Login Student Self-Service) */}
         <TrackMyAdmission settings={settings} compact />
+
+        {/* 2C. MY ATTENDANCE / TRACK ATTENDANCE (Zero-Login Student Attendance Portal) */}
+        <section id="my-attendance" className="app-card rounded-2xl p-5 sm:p-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-start gap-3.5 max-w-2xl">
+              <div className="w-10 h-10 rounded-xl bg-violet-50 border border-violet-100 text-violet-600 flex items-center justify-center shrink-0">
+                <CalendarCheck className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-violet-700 uppercase tracking-wide">
+                  MY ATTENDANCE / TRACK ATTENDANCE
+                </p>
+                <h2 className="font-display text-base sm:text-lg font-bold text-gray-900 mt-0.5">
+                  Check Your Monthly Calendar &amp; Yearly Attendance Report
+                </h2>
+                <p className="text-xs sm:text-sm text-gray-600 mt-1 leading-relaxed">
+                  Verify using your Student ID Number or Registered Mobile Number with OTP to view daily IST entry/exit times, color-coded attendance calendar, and download PDF reports.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigate('attendance')}
+              className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              Track Attendance
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          </div>
+        </section>
 
         {/* 3. COURSES IN SMALL ROUNDED CARDS */}
         <section id="courses" className="space-y-4">
@@ -277,7 +317,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-gray-900">{b.timing}</p>
                       <p className="text-xs text-gray-500 truncate">
-                        {b.name}
+                        {b.name} · {formatScheduledDaysSummary(b.scheduledDays)}
                         {b.capacity ? ` · ${b.capacity} seats` : ''}
                       </p>
                     </div>
@@ -452,6 +492,13 @@ export const HomePage: React.FC<HomePageProps> = ({
               className="hover:text-violet-700 cursor-pointer"
             >
               Admissions
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate('attendance')}
+              className="hover:text-violet-700 cursor-pointer"
+            >
+              My Attendance
             </button>
             <button
               type="button"

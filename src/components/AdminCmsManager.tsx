@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   CheckCircle2,
+  Edit3,
   Eye,
   EyeOff,
   Loader2,
@@ -10,6 +11,11 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
+import {
+  DEFAULT_SCHEDULED_DAYS,
+  formatScheduledDaysSummary,
+  WEEKDAY_LABELS,
+} from '../lib/attendanceUtils';
 import {
   addAuthorizedAdmin,
   addGalleryPhoto,
@@ -470,10 +476,13 @@ export const AdminNoticesAndCatalogPanel: React.FC<{
   const [cFee, setCFee] = useState('5500');
   const [cDesc, setCDesc] = useState('');
 
+  const [editingBatchId, setEditingBatchId] = useState<string | null>(null);
   const [bName, setBName] = useState('');
   const [bTiming, setBTiming] = useState('');
   const [bCapacity, setBCapacity] = useState('60');
   const [bFeeOverride, setBFeeOverride] = useState('');
+  const [bScheduledDays, setBScheduledDays] = useState<number[]>(DEFAULT_SCHEDULED_DAYS);
+  const [bStartDate, setBStartDate] = useState('');
 
   const handleAddNotice = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -520,22 +529,43 @@ export const AdminNoticesAndCatalogPanel: React.FC<{
     }
   };
 
+  const resetBatchForm = () => {
+    setEditingBatchId(null);
+    setBName('');
+    setBTiming('');
+    setBCapacity('60');
+    setBFeeOverride('');
+    setBScheduledDays(DEFAULT_SCHEDULED_DAYS);
+    setBStartDate('');
+  };
+
+  const toggleBatchWeekday = (dayNum: number) => {
+    setBScheduledDays((prev) => {
+      if (prev.includes(dayNum)) {
+        return prev.length > 1 ? prev.filter((d) => d !== dayNum) : prev;
+      }
+      return [...prev, dayNum].sort((a, b) => a - b);
+    });
+  };
+
   const handleAddBatch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!bName.trim() || !bTiming.trim()) return;
     setBusy(true);
     try {
+      const existingBatch = editingBatchId ? batches.find((b) => b.id === editingBatchId) : null;
       await saveBatch({
+        id: editingBatchId || undefined,
         name: bName,
         timing: bTiming,
         capacity: Number(bCapacity) || 60,
         feeOverride: bFeeOverride ? Number(bFeeOverride) : null,
-        active: true,
-        order: batches.length + 1,
+        scheduledDays: bScheduledDays.length > 0 ? bScheduledDays : DEFAULT_SCHEDULED_DAYS,
+        scheduleStartDate: bStartDate,
+        active: existingBatch ? existingBatch.active : true,
+        order: existingBatch ? existingBatch.order : batches.length + 1,
       });
-      setBName('');
-      setBTiming('');
-      setBFeeOverride('');
+      resetBatchForm();
     } finally {
       setBusy(false);
     }
@@ -758,8 +788,10 @@ export const AdminNoticesAndCatalogPanel: React.FC<{
 
       {section === 'batches' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-          <form onSubmit={handleAddBatch} className="lg:col-span-5 app-card rounded-2xl p-5 space-y-3">
-            <h3 className="font-display text-base font-bold text-gray-900">Add Batch Slot</h3>
+          <form onSubmit={handleAddBatch} className="lg:col-span-5 app-card rounded-2xl p-5 space-y-3.5">
+            <h3 className="font-display text-base font-bold text-gray-900">
+              {editingBatchId ? 'Edit Batch & Schedule' : 'Add Batch Slot'}
+            </h3>
             <input
               type="text"
               required
@@ -794,32 +826,111 @@ export const AdminNoticesAndCatalogPanel: React.FC<{
                 className={`${inputCls} font-mono`}
               />
             </div>
-            <button
-              type="submit"
-              disabled={busy}
-              className="w-full py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold cursor-pointer"
-            >
-              Add Batch Timing
-            </button>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1.5">
+                Scheduled Class Days (For Attendance Calculation)
+              </label>
+              <div className="grid grid-cols-7 gap-1">
+                {WEEKDAY_LABELS.map((label, idx) => {
+                  const active = bScheduledDays.includes(idx);
+                  return (
+                    <button
+                      key={label}
+                      type="button"
+                      onClick={() => toggleBatchWeekday(idx)}
+                      className={`py-1.5 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer ${
+                        active
+                          ? 'bg-violet-600 border-violet-600 text-white'
+                          : 'bg-gray-50 border-gray-200 text-gray-500 hover:text-gray-900'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-1 text-[11px] text-gray-400">
+                Unselected weekdays automatically show as &ldquo;Class Not Scheduled&rdquo; and never count as absences.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Batch Start Date (Optional)
+              </label>
+              <input
+                type="date"
+                value={bStartDate}
+                onChange={(e) => setBStartDate(e.target.value)}
+                className={`${inputCls} font-mono`}
+              />
+            </div>
+
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="submit"
+                disabled={busy}
+                className="flex-1 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold cursor-pointer"
+              >
+                {editingBatchId ? 'Update Batch' : 'Add Batch Timing'}
+              </button>
+              {editingBatchId && (
+                <button
+                  type="button"
+                  onClick={resetBatchForm}
+                  className="px-4 py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-xs font-semibold text-gray-700 cursor-pointer"
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
           </form>
 
           <div className="lg:col-span-7 space-y-2.5">
             {batches.map((b) => (
               <div key={b.id} className="app-card rounded-2xl p-4 flex items-center justify-between gap-3">
-                <div>
+                <div className="min-w-0">
                   <p className="font-semibold text-gray-900 text-sm">{b.timing}</p>
                   <p className="text-xs text-gray-500">
                     {b.name} · Capacity {b.capacity || 60}
                     {b.feeOverride ? ` · Batch Fee ₹${b.feeOverride.toLocaleString('en-IN')}` : ''}
                   </p>
+                  <p className="text-[11px] text-violet-700 font-medium mt-0.5">
+                    Classes: {formatScheduledDaysSummary(b.scheduledDays)}
+                    {b.scheduleStartDate ? ` · Starts ${b.scheduleStartDate}` : ''}
+                  </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void deleteBatch(b.id)}
-                  className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 cursor-pointer"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    title="Edit batch"
+                    onClick={() => {
+                      setEditingBatchId(b.id);
+                      setBName(b.name);
+                      setBTiming(b.timing);
+                      setBCapacity(String(b.capacity || 60));
+                      setBFeeOverride(b.feeOverride ? String(b.feeOverride) : '');
+                      setBScheduledDays(
+                        b.scheduledDays && b.scheduledDays.length > 0
+                          ? b.scheduledDays
+                          : DEFAULT_SCHEDULED_DAYS
+                      );
+                      setBStartDate(b.scheduleStartDate || '');
+                    }}
+                    className="p-1.5 rounded-lg text-gray-500 hover:text-violet-700 hover:bg-violet-50 cursor-pointer"
+                  >
+                    <Edit3 className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    title="Delete batch"
+                    onClick={() => void deleteBatch(b.id)}
+                    className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 cursor-pointer"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -993,15 +1104,26 @@ export const AdminSettingsPanel: React.FC<{
             />
           </div>
 
-          <label className="inline-flex items-center gap-2 text-xs font-medium text-gray-700 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={form.admissionsOpen}
-              onChange={(e) => setForm({ ...form, admissionsOpen: e.target.checked })}
-              className="accent-violet-600"
-            />
-            Show &ldquo;Admissions Open&rdquo; Card on Homepage
-          </label>
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-xs font-medium text-gray-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.admissionsOpen}
+                onChange={(e) => setForm({ ...form, admissionsOpen: e.target.checked })}
+                className="accent-violet-600"
+              />
+              Show &ldquo;Admissions Open&rdquo; Card on Homepage
+            </label>
+            <label className="flex items-center gap-2 text-xs font-medium text-gray-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={Boolean(form.attendanceExitTracking)}
+                onChange={(e) => setForm({ ...form, attendanceExitTracking: e.target.checked })}
+                className="accent-violet-600"
+              />
+              Enable Separate Entry &amp; Exit Time Recording in QR Attendance Scanner
+            </label>
+          </div>
 
           <div>
             <button

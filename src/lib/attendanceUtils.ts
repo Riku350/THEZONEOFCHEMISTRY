@@ -308,8 +308,8 @@ export interface StudentAttendanceAnalytics {
   year: number;
   selectedMonth: number; // 1..12
   yearlySummary: AttendanceSummaryMetrics;
-  currentMonthSummary: AttendanceSummaryMetrics;
-  selectedMonthSummary: AttendanceSummaryMetrics;
+  currentMonthSummary: MonthlyAttendanceBreakdown;
+  selectedMonthSummary: MonthlyAttendanceBreakdown;
   monthlyBreakdown: MonthlyAttendanceBreakdown[];
   calendarDays: CalendarDayCell[];
   leadingEmptyCells: number;

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Atom, ClipboardList, Home, Search, Shield } from 'lucide-react';
+import { Atom, CalendarCheck, ClipboardList, Home, Search, Shield } from 'lucide-react';
 import { PublicView } from '../types';
 
 interface NavbarProps {
@@ -45,10 +45,12 @@ export const Navbar: React.FC<NavbarProps> = ({ currentView, instituteName, onNa
             </button>
             <button
               type="button"
-              onClick={() => onNavigate('home', 'gallery')}
-              className="hover:text-gray-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              onClick={() => onNavigate('attendance')}
+              className={`transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                currentView === 'attendance' ? 'text-violet-700 font-semibold' : 'hover:text-gray-900'
+              }`}
             >
-              Gallery
+              Attendance
             </button>
             <button
               type="button"
@@ -88,11 +90,12 @@ export const Navbar: React.FC<NavbarProps> = ({ currentView, instituteName, onNa
         aria-label="Mobile Navigation"
         className="no-print md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-gray-200 pb-safe"
       >
-        <div className="grid grid-cols-4 h-14 items-center">
+        <div className="grid grid-cols-5 h-14 items-center">
           {(
             [
               { id: 'home', label: 'Home', icon: Home },
               { id: 'apply', label: 'Apply', icon: ClipboardList },
+              { id: 'attendance', label: 'Attend', icon: CalendarCheck },
               { id: 'track', label: 'Track', icon: Search },
               { id: 'admin', label: 'Admin', icon: Shield },
             ] as const

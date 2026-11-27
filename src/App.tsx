@@ -9,6 +9,7 @@ import { FloatingWhatsApp } from './components/FloatingWhatsApp';
 import { HomePage } from './components/HomePage';
 import { IntroScreen } from './components/IntroScreen';
 import { Navbar } from './components/Navbar';
+import { StudentAttendanceTracker } from './components/StudentAttendanceTracker';
 import { TrackApplication } from './components/TrackApplication';
 import {
   DEFAULT_BANNERS,
@@ -161,6 +162,14 @@ export default function App() {
             {view === 'track' && (
               <TrackApplication
                 settings={publicData.settings}
+                onNavigate={handleNavigate}
+              />
+            )}
+
+            {view === 'attendance' && (
+              <StudentAttendanceTracker
+                settings={publicData.settings}
+                batches={publicData.batches}
                 onNavigate={handleNavigate}
               />
             )}

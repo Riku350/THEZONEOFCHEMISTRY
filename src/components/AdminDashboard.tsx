@@ -5,6 +5,7 @@ import {
   Atom,
   Ban,
   Bell,
+  CalendarCheck,
   CheckCircle2,
   ClipboardList,
   CreditCard,
@@ -30,6 +31,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { CLASS_OPTIONS, DEFAULT_SETTINGS, STREAM_OPTIONS } from '../config/defaults';
+import { getClientIstNow } from '../lib/attendanceUtils';
 import { auth } from '../lib/firebase';
 import {
   approveApplicationAndCreateStudent,
@@ -38,7 +40,9 @@ import {
   markApplicationUnderReview,
   regenerateStudentSecurityCode,
   rejectApplication,
+  saveInstituteSettings,
   subscribeAdminCollections,
+  syncApprovedStudentsPublicAttendance,
   syncMissingTrackingRecords,
   toggleStudentStatus,
   updateApplicationDetails,
@@ -49,6 +53,9 @@ import {
   AdminTab,
   AdminUserRecord,
   AdmissionApplication,
+  AttendanceAuditLog,
+  AttendanceHoliday,
+  AttendanceRecord,
   BannerItem,
   BatchItem,
   CourseItem,
@@ -63,6 +70,7 @@ import {
   StudentRecord,
   StudentStream,
 } from '../types';
+import { AdminAttendancePanel } from './AdminAttendancePanel';
 import {
   AdminBannersPanel,
   AdminGalleryPanel,
@@ -104,6 +112,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [feeRules, setFeeRules] = useState<FeeRule[]>([]);
   const [admins, setAdmins] = useState<AdminUserRecord[]>([]);
   const [settings, setSettings] = useState<InstituteSettings>(DEFAULT_SETTINGS);
+  const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
+  const [attendanceAuditLogs, setAttendanceAuditLogs] = useState<AttendanceAuditLog[]>([]);
+  const [attendanceHolidays, setAttendanceHolidays] = useState<AttendanceHoliday[]>([]);
   const [syncError, setSyncError] = useState('');
   const [actionBusy, setActionBusy] = useState(false);
   const [toast, setToast] = useState('');
@@ -155,6 +166,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       onFees: setFeeRules,
       onAdmins: setAdmins,
       onSettings: setSettings,
+      onAttendance: setAttendance,
+      onAttendanceAuditLogs: setAttendanceAuditLogs,
+      onAttendanceHolidays: setAttendanceHolidays,
       onError: (err) => setSyncError(err.message),
     });
 
@@ -165,6 +179,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   }, [onPublicDataChanged]);
 
   const trackingBackfilledRef = useRef(false);
+  const attendanceBackfilledRef = useRef(false);
 
   useEffect(() => {
     if (trackingBackfilledRef.current) return;
@@ -172,6 +187,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     trackingBackfilledRef.current = true;
     void syncMissingTrackingRecords(applications, students, settings.academicSession);
   }, [applications, students, settings.academicSession]);
+
+  useEffect(() => {
+    if (attendanceBackfilledRef.current) return;
+    if (students.length === 0) return;
+    attendanceBackfilledRef.current = true;
+    const currentIstYear = getClientIstNow().year;
+    void syncApprovedStudentsPublicAttendance(students, attendance, batches, currentIstYear);
+  }, [students, attendance, batches]);
 
   useEffect(() => {
     if (!selectedApp) return;
@@ -353,6 +376,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       badge: kpis.pendingApplications > 0 ? kpis.pendingApplications : undefined,
     },
     { id: 'students', label: 'Students', icon: <GraduationCap className="w-4 h-4" /> },
+    { id: 'attendance', label: 'Attendance', icon: <CalendarCheck className="w-4 h-4" /> },
     { id: 'scanner', label: 'QR Scanner', icon: <QrCode className="w-4 h-4" /> },
     { id: 'fees', label: 'Fees', icon: <CreditCard className="w-4 h-4" /> },
     { id: 'banners', label: 'Banners', icon: <LayoutTemplate className="w-4 h-4" /> },
@@ -361,7 +385,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     { id: 'settings', label: 'Settings', icon: <Settings className="w-4 h-4" /> },
   ];
 
-  const moreMenuTabs: AdminTab[] = ['fees', 'banners', 'gallery', 'notices', 'settings'];
+  const moreMenuTabs: AdminTab[] = ['students', 'fees', 'banners', 'gallery', 'notices', 'settings'];
   const isMoreTabActive = moreMenuTabs.includes(activeTab);
 
   const uniqueCourseNames = Array.from(
@@ -1093,9 +1117,40 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
           )}
 
-          {/* TAB 4: QR CODE SCANNER */}
+          {/* TAB 4: ATTENDANCE MANAGEMENT */}
+          {activeTab === 'attendance' && (
+            <AdminAttendancePanel
+              adminEmail={user.email || 'admin'}
+              students={students}
+              batches={batches}
+              courses={courses}
+              attendance={attendance}
+              auditLogs={attendanceAuditLogs}
+              holidays={attendanceHolidays}
+              settings={settings}
+              onOpenScanner={() => setActiveTab('scanner')}
+              onToast={showToast}
+            />
+          )}
+
+          {/* TAB 5: AUTOMATIC QR ATTENDANCE SCANNER */}
           {activeTab === 'scanner' && (
-            <AdminQrScanner adminEmail={user.email || 'admin'} scanHistory={scanHistory} />
+            <AdminQrScanner
+              adminEmail={user.email || 'admin'}
+              batches={batches}
+              attendance={attendance}
+              scanHistory={scanHistory}
+              settings={settings}
+              onToggleExitTracking={async (enabled) => {
+                const { id: _id, updatedAt: _u, ...rest } = settings;
+                await saveInstituteSettings({ ...rest, attendanceExitTracking: enabled });
+                showToast(
+                  enabled
+                    ? 'Separate Entry & Exit QR tracking enabled.'
+                    : 'Single daily attendance scan mode enabled.'
+                );
+              }}
+            />
           )}
 
           {/* TAB 5: FEE MANAGEMENT */}
@@ -1140,7 +1195,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           [
             { id: 'overview', label: 'Overview', icon: LayoutDashboard },
             { id: 'applications', label: 'Apps', icon: ClipboardList, badge: kpis.pendingApplications },
-            { id: 'students', label: 'Students', icon: GraduationCap },
+            { id: 'attendance', label: 'Attend', icon: CalendarCheck },
             { id: 'scanner', label: 'Scan', icon: QrCode },
           ] as const
         ).map((tab) => {
