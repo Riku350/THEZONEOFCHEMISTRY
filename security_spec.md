@@ -17,6 +17,7 @@
 14. **Direct Yearly Student Attendance Ledger**: `/studentAttendancePublic/{attendanceKey}` is keyed by `attid_<SHA-256(studentId)>_<year>` (with legacy `attpub_<SHA-256(studentId:mobile)>_<year>` fallback), allows single-document `get` only (never public `list`), and is strictly admin-written.
 15. **Admin-Managed Teacher ID Card Profile**: Teacher photograph, biography, specialization, experience, contact details, and motivational message stored in `/settings/main` (and photo fallback in `/publicMedia/{mediaId}`) are strictly admin-write only with strict `.size()` limits, while allowing public single-document `get` for authorized ID card rendering.
 16. **Privacy-Minimized Direct Attendance Lookup Index**: `/attendanceLookupIndex/{lookupKey}` is keyed by `attmob_<SHA-256(10DigitMobile)>` or `attid_<SHA-256(UPPERCASE_STUDENT_ID)>`, strictly admin-written only for **approved and active** students (suspended/pending/rejected records are excluded or removed), allows single-document `get` only (never public `list`), and exposes only attendance-display fields (`studentId`, `studentName`, `fatherName`, `studentClass`, `course`, `batch`, `maskedMobile`, `photoUrl`, `photoDataUrl`, `enrolledDate`, `attendanceKeyHash`) with zero raw mobile, address, fee, payment, security code, or QR token exposure.
+17. **Admin-Managed Promotional Banners & Safe CTA Targets**: `/banners/{bannerId}` is strictly admin-write only, enforcing `.size()` limits on `title`, `subtitle`, `description`, `announcement`, `ctaLabel`, and `ctaTarget`, while `/settings/main` enforces numeric bounds (`2..30` seconds) on `bannerSliderIntervalSec` and `.size()` limits on teacher portrait cutout metadata (`teacherPhotoOriginalUrl`, `teacherDesignation`).
 
 ## 2. The "Dirty Dozen" Adversarial Payloads
 1. **Self-Approved Application**: Public applicant submits `/applications/ZOC2026-9999` with `status: "approved"`. Expected: `PERMISSION_DENIED`.
@@ -40,6 +41,8 @@
 19. **Unauthorized Teacher Profile Overwrite / Oversized Bio**: Unauthenticated caller or oversized `teacherBio` (>600 chars) attempts write to `/settings/main`. Expected: `PERMISSION_DENIED`.
 20. **Forged Attendance Lookup Index Write**: Unauthenticated caller attempts `create` or `update` on `/attendanceLookupIndex/attmob_<hash>` to inject a fake active student record. Expected: `PERMISSION_DENIED`.
 21. **Attendance Lookup Index PII Smuggling**: Admin or caller attempts to write unauthorized extra keys (`feeAmount`, `securityCode`, `address`, `studentMobile`) into `/attendanceLookupIndex/{lookupKey}` entry map. Expected: `PERMISSION_DENIED`.
+22. **Unauthorized Banner Injection / Malicious CTA Scheme**: Unauthenticated caller attempts `create` on `/banners/evil_banner` with `ctaTarget: "javascript:alert(1)"` or oversized `subtitle`. Expected: `PERMISSION_DENIED`.
+23. **Out-of-Bounds Slider Timing**: Caller attempts to write `bannerSliderIntervalSec: 0` or `9999` to `/settings/main`. Expected: `PERMISSION_DENIED`.
 
 
 

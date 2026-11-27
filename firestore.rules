@@ -284,12 +284,26 @@ service cloud.firestore {
         && data.paidAt is timestamp;
     }
 
+    function isSafeCtaTarget(val) {
+      return val == ''
+        || (val in ['apply', 'attendance', 'track', 'whatsapp', '#courses', '#batches', '#about', '#gallery', '#contact'])
+        || val.matches('^https://[a-zA-Z0-9._~:/?#\\[\\]@!$&\'()*+,;=%-]+$');
+    }
+
     function isValidBanner(data) {
       return data.keys().hasAll(['title', 'order', 'active', 'updatedAt'])
-        && data.keys().hasOnly(['title', 'description', 'announcement', 'imageUrl', 'mediaId', 'order', 'active', 'updatedAt'])
+        && data.keys().hasOnly([
+          'title', 'subtitle', 'description', 'announcement',
+          'ctaLabel', 'ctaTarget', 'imageUrl', 'mediaId',
+          'order', 'active', 'updatedAt'
+        ])
         && isValidString(data.title, 2, 140)
+        && isOptionalString(data, 'subtitle', 180)
         && isOptionalString(data, 'description', 500)
         && isOptionalString(data, 'announcement', 240)
+        && isOptionalString(data, 'ctaLabel', 60)
+        && isOptionalString(data, 'ctaTarget', 300)
+        && (!('ctaTarget' in data) || isSafeCtaTarget(data.ctaTarget))
         && isOptionalString(data, 'imageUrl', 2000)
         && isOptionalString(data, 'mediaId', 128)
         && isNonNegNumber(data.order, 1000)
@@ -338,7 +352,11 @@ service cloud.firestore {
           'instituteName', 'teacherName', 'tagline', 'academicSession', 'defaultFee',
           'admissionsOpen', 'admissionHeadline', 'phone', 'whatsappNumber', 'email',
           'address', 'signatureText', 'attendanceExitTracking',
-          'teacherPhotoUrl', 'teacherPhotoMediaId', 'teacherBio', 'teacherExperience',
+          'bannerSliderIntervalSec', 'bannerAutoSlide',
+          'teacherPhotoUrl', 'teacherPhotoMediaId',
+          'teacherPhotoOriginalUrl', 'teacherPhotoOriginalMediaId',
+          'teacherPhotoIsCutout', 'teacherDesignation',
+          'teacherBio', 'teacherExperience',
           'teacherSpecialization', 'teacherContactNumber', 'teacherWhatsappNumber',
           'teacherEmail', 'idCardMotivationalMessage',
           'updatedAt'
@@ -356,8 +374,14 @@ service cloud.firestore {
         && isOptionalString(data, 'address', 300)
         && isOptionalString(data, 'signatureText', 80)
         && (!('attendanceExitTracking' in data) || data.attendanceExitTracking is bool)
+        && (!('bannerSliderIntervalSec' in data) || ((data.bannerSliderIntervalSec is int || data.bannerSliderIntervalSec is float) && data.bannerSliderIntervalSec >= 2 && data.bannerSliderIntervalSec <= 30))
+        && (!('bannerAutoSlide' in data) || data.bannerAutoSlide is bool)
         && isOptionalString(data, 'teacherPhotoUrl', 2000)
         && isOptionalString(data, 'teacherPhotoMediaId', 128)
+        && isOptionalString(data, 'teacherPhotoOriginalUrl', 2000)
+        && isOptionalString(data, 'teacherPhotoOriginalMediaId', 128)
+        && (!('teacherPhotoIsCutout' in data) || data.teacherPhotoIsCutout is bool)
+        && isOptionalString(data, 'teacherDesignation', 80)
         && isOptionalString(data, 'teacherBio', 600)
         && isOptionalString(data, 'teacherExperience', 120)
         && isOptionalString(data, 'teacherSpecialization', 160)

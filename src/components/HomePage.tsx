@@ -28,6 +28,7 @@ import {
   PublicView,
 } from '../types';
 import { ResolvedImage } from './ResolvedImage';
+import { PromoBannerSlider } from './PromoBannerSlider';
 import { TrackMyAdmission } from './TrackMyAdmission';
 
 interface HomePageProps {
@@ -199,7 +200,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                   Check Your Monthly Calendar &amp; Yearly Attendance Report
                 </h2>
                 <p className="text-xs sm:text-sm text-gray-600 mt-1 leading-relaxed">
-                  Verify using your Student ID Number or Registered Mobile Number with OTP to view daily IST entry/exit times, color-coded attendance calendar, and download PDF reports.
+                  Enter your Registered Mobile Number or Student ID Number — no OTP or login required — to view daily IST entry/exit times, color-coded attendance calendar, and download PDF reports.
                 </p>
               </div>
             </div>
@@ -297,6 +298,13 @@ export const HomePage: React.FC<HomePageProps> = ({
           )}
         </section>
 
+        {/* 3B. RESPONSIVE PROMOTIONAL BANNER SLIDER (IMMEDIATELY ABOVE BATCH TIMINGS) */}
+        <PromoBannerSlider
+          banners={banners}
+          settings={settings}
+          onNavigate={onNavigate}
+        />
+
         {/* 4. BATCH TIMINGS & NOTICES (2-COLUMN CLEAN GRID) */}
         <section id="batches" className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Batch Timings */}
@@ -363,24 +371,50 @@ export const HomePage: React.FC<HomePageProps> = ({
           </div>
         </section>
 
-        {/* 5. ABOUT TEACHER (Compact Profile Card) */}
+        {/* 5. ABOUT TEACHER (Reuses Admin-Uploaded Teacher Portrait & Cutout Composition) */}
         <section id="about" className="app-card rounded-2xl p-5 sm:p-6">
           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-5">
-            <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl overflow-hidden border border-gray-200 shrink-0 bg-gray-50">
+            <div
+              className={`w-24 h-28 sm:w-28 sm:h-32 rounded-2xl overflow-hidden border shrink-0 flex items-end justify-center ${
+                settings.teacherPhotoIsCutout && (settings.teacherPhotoUrl || settings.teacherPhotoMediaId)
+                  ? 'border-violet-300 bg-gradient-to-b from-violet-600 via-violet-700 to-violet-900'
+                  : 'border-gray-200 bg-violet-50/60'
+              }`}
+            >
               <ResolvedImage
-                url={ASSETS.sonuSirPortrait}
+                url={settings.teacherPhotoUrl || (!settings.teacherPhotoMediaId ? ASSETS.sonuSirPortrait : '')}
+                mediaId={settings.teacherPhotoMediaId}
                 alt={settings.teacherName}
-                className="w-full h-full object-cover object-top"
-                fallbackLabel="Teacher"
+                className={
+                  settings.teacherPhotoIsCutout && (settings.teacherPhotoUrl || settings.teacherPhotoMediaId)
+                    ? 'w-full h-full object-contain object-bottom drop-shadow-md'
+                    : 'w-full h-full object-cover object-top'
+                }
+                fallbackLabel={settings.teacherName || 'Teacher'}
               />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-semibold text-violet-700">About Teacher</p>
-              <h2 className="font-display text-lg font-bold text-gray-900 mt-0.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-xs font-semibold text-violet-700">About Teacher</p>
+                {settings.teacherDesignation && (
+                  <span className="px-2 py-0.5 rounded-md bg-violet-50 border border-violet-100 text-[11px] font-semibold text-violet-700">
+                    {settings.teacherDesignation}
+                  </span>
+                )}
+              </div>
+              <h2 className="font-display text-lg sm:text-xl font-bold text-gray-900 mt-0.5">
                 {settings.teacherName}
               </h2>
+              {(settings.teacherSpecialization || settings.teacherExperience) && (
+                <p className="text-xs font-medium text-violet-700 mt-0.5">
+                  {[settings.teacherSpecialization, settings.teacherExperience]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </p>
+              )}
               <p className="mt-1.5 text-sm text-gray-600 leading-relaxed">
-                Founder and Chief Chemistry Mentor at {settings.instituteName}. Dedicated to building clear Organic mechanism logic, Physical numerical speed, and NCERT mastery for Board, NEET, and JEE students through structured notes and weekly tests.
+                {settings.teacherBio?.trim() ||
+                  `Founder and Chief Chemistry Mentor at ${settings.instituteName}. Dedicated to building clear Organic mechanism logic, Physical numerical speed, and NCERT mastery for Board, NEET, and JEE students through structured notes and weekly tests.`}
               </p>
             </div>
           </div>

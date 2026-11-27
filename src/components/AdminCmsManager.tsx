@@ -2,22 +2,32 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertCircle,
+  ArrowDown,
+  ArrowUp,
   CheckCircle2,
+  Clock,
+  Copy,
+  Download,
   Edit3,
+  Eraser,
   Eye,
   EyeOff,
+  FileImage,
   FileText,
   IdCard,
   Image as ImageIcon,
   Layers,
+  Link2,
   Loader2,
   Pin,
   Plus,
   Printer,
   RotateCcw,
   Save,
+  Sparkles,
   Trash2,
   Upload,
+  X,
 } from 'lucide-react';
 import { DEFAULT_ID_CARD_MOTIVATIONAL_MESSAGE } from '../config/defaults';
 import {
@@ -34,6 +44,8 @@ import {
   deleteGalleryPhoto,
   deleteNotice,
   removeAuthorizedAdmin,
+  reorderBanners,
+  sanitizeBannerCtaTarget,
   saveBanner,
   saveBatch,
   saveCourse,
@@ -47,6 +59,12 @@ import {
   downloadIdCardPdf,
   renderIdCardBothSidesDataUrls,
 } from '../lib/idCardRenderer';
+import { resolveMediaSource } from '../lib/media';
+import {
+  detectImageHasTransparency,
+  PortraitCutoutResult,
+  renderTeacherBannerPreviewDataUrl,
+} from '../lib/teacherPortraitStudio';
 import {
   AdminUserRecord,
   BannerItem,
@@ -59,50 +77,163 @@ import {
   StudentRecord,
 } from '../types';
 import { ResolvedImage } from './ResolvedImage';
+import { TeacherPortraitStudioModal } from './TeacherPortraitStudioModal';
 
 const inputCls =
   'w-full rounded-xl bg-gray-50 focus:bg-white border border-gray-200 focus:border-violet-500 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none transition-colors';
 
 // -----------------------------------------------------------------------------
-// 1. BANNER MANAGEMENT
+// 1. HOMEPAGE BANNERS MANAGEMENT (Promotional Slider Above Batch Timings)
 // -----------------------------------------------------------------------------
-export const AdminBannersPanel: React.FC<{ banners: BannerItem[] }> = ({ banners }) => {
+const CTA_PRESET_OPTIONS = [
+  { value: 'apply', label: 'Apply for Admission Page' },
+  { value: 'attendance', label: 'My Attendance Portal' },
+  { value: 'track', label: 'Track My Admission' },
+  { value: '#courses', label: 'Homepage — Courses Section' },
+  { value: '#batches', label: 'Homepage — Batch Timings' },
+  { value: '#about', label: 'Homepage — About Teacher' },
+  { value: '#gallery', label: 'Homepage — Photo Gallery' },
+  { value: '#contact', label: 'Homepage — Contact Us' },
+  { value: 'whatsapp', label: 'Chat on WhatsApp' },
+  { value: 'custom', label: 'Custom External Link (https://...)' },
+  { value: '', label: 'No Button' },
+] as const;
+
+const KNOWN_CTA_PRESETS = new Set<string>([
+  '',
+  'apply',
+  'attendance',
+  'track',
+  '#courses',
+  '#batches',
+  '#about',
+  '#gallery',
+  '#contact',
+  'whatsapp',
+]);
+
+export const AdminBannersPanel: React.FC<{
+  banners: BannerItem[];
+  settings: InstituteSettings;
+}> = ({ banners, settings }) => {
   const [title, setTitle] = useState('');
+  const [subtitle, setSubtitle] = useState('');
   const [description, setDescription] = useState('');
   const [announcement, setAnnouncement] = useState('');
-  const [order, setOrder] = useState('1');
+  const [ctaLabel, setCtaLabel] = useState('Apply for Admission');
+  const [ctaPreset, setCtaPreset] = useState<string>('apply');
+  const [customCtaUrl, setCustomCtaUrl] = useState('');
+  const [order, setOrder] = useState(String(banners.length + 1));
   const [active, setActive] = useState(true);
   const [file, setFile] = useState<File | null>(null);
+  const [filePreviewUrl, setFilePreviewUrl] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [existingUrl, setExistingUrl] = useState('');
   const [existingMediaId, setExistingMediaId] = useState('');
   const [busy, setBusy] = useState(false);
+  const [reordering, setReordering] = useState(false);
   const [msg, setMsg] = useState('');
+  const [errMsg, setErrMsg] = useState('');
+
+  // Slider auto-timing state synced to /settings/main
+  const [sliderIntervalSec, setSliderIntervalSec] = useState<number>(
+    settings.bannerSliderIntervalSec ?? 5
+  );
+  const [sliderAutoSlide, setSliderAutoSlide] = useState<boolean>(
+    settings.bannerAutoSlide !== false
+  );
+  const [savingTiming, setSavingTiming] = useState(false);
+
+  useEffect(() => {
+    setSliderIntervalSec(settings.bannerSliderIntervalSec ?? 5);
+    setSliderAutoSlide(settings.bannerAutoSlide !== false);
+  }, [settings.bannerSliderIntervalSec, settings.bannerAutoSlide]);
+
+  useEffect(() => {
+    if (!file) {
+      setFilePreviewUrl('');
+      return;
+    }
+    const objUrl = URL.createObjectURL(file);
+    setFilePreviewUrl(objUrl);
+    return () => URL.revokeObjectURL(objUrl);
+  }, [file]);
+
+  const sortedBanners = useMemo(
+    () => [...banners].sort((a, b) => (a.order || 0) - (b.order || 0)),
+    [banners]
+  );
 
   const resetForm = () => {
     setTitle('');
+    setSubtitle('');
     setDescription('');
     setAnnouncement('');
+    setCtaLabel('Apply for Admission');
+    setCtaPreset('apply');
+    setCustomCtaUrl('');
     setOrder(String(banners.length + 1));
     setActive(true);
     setFile(null);
     setEditingId(null);
     setExistingUrl('');
     setExistingMediaId('');
+    setErrMsg('');
+  };
+
+  const handleSaveSliderTiming = async () => {
+    setSavingTiming(true);
+    setMsg('');
+    setErrMsg('');
+    try {
+      const { id: _id, updatedAt: _u, ...rest } = settings;
+      await saveInstituteSettings({
+        ...rest,
+        bannerSliderIntervalSec: Math.max(2, Math.min(30, Number(sliderIntervalSec) || 5)),
+        bannerAutoSlide: sliderAutoSlide,
+      });
+      setMsg(
+        sliderAutoSlide
+          ? `Homepage banner slider timing saved (${sliderIntervalSec}s auto-slide).`
+          : 'Homepage banner slider set to manual mode.'
+      );
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : 'Failed to save slider timing.');
+    } finally {
+      setSavingTiming(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
-    setBusy(true);
+    setErrMsg('');
     setMsg('');
+
+    let resolvedTarget = '';
+    if (ctaPreset === 'custom') {
+      const candidate = customCtaUrl.trim();
+      const validated = sanitizeBannerCtaTarget(candidate);
+      if (!validated) {
+        setErrMsg('Custom button destination must be a valid https:// URL.');
+        return;
+      }
+      resolvedTarget = validated;
+    } else {
+      resolvedTarget = ctaPreset;
+    }
+
+    setBusy(true);
     try {
       await saveBanner(
         {
           id: editingId || undefined,
           title,
+          subtitle,
           description,
           announcement,
+          ctaLabel: resolvedTarget ? ctaLabel : '',
+          ctaTarget: resolvedTarget,
           imageUrl: existingUrl,
           mediaId: existingMediaId,
           order: Number(order) || 1,
@@ -111,19 +242,89 @@ export const AdminBannersPanel: React.FC<{ banners: BannerItem[] }> = ({ banners
         file
       );
       resetForm();
-      setMsg('Banner saved and published.');
+      setMsg(
+        editingId
+          ? 'Promotional banner updated and synced to homepage.'
+          : 'New promotional banner published to homepage.'
+      );
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : 'Unable to save banner.');
     } finally {
       setBusy(false);
     }
   };
 
+  const handleMoveBanner = async (index: number, direction: -1 | 1) => {
+    const targetIdx = index + direction;
+    if (targetIdx < 0 || targetIdx >= sortedBanners.length) return;
+    setReordering(true);
+    setErrMsg('');
+    try {
+      const copy = [...sortedBanners];
+      const [moved] = copy.splice(index, 1);
+      copy.splice(targetIdx, 0, moved);
+      await reorderBanners(copy);
+      setMsg('Banner slide order updated.');
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : 'Could not update banner order.');
+    } finally {
+      setReordering(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
-      <div>
-        <h2 className="font-display text-lg sm:text-xl font-bold text-gray-900">Banners</h2>
-        <p className="text-xs sm:text-sm text-gray-500">
-          Manage homepage announcement cards and banners.
-        </p>
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div>
+          <h2 className="font-display text-lg sm:text-xl font-bold text-gray-900">
+            Homepage Banners
+          </h2>
+          <p className="text-xs sm:text-sm text-gray-500">
+            Manage the responsive promotional banner slider displayed above Batch Timings on the homepage.
+          </p>
+        </div>
+
+        {/* Automatic Slider Timing Bar */}
+        <div className="app-card rounded-2xl px-3.5 py-2.5 flex flex-wrap items-center gap-3">
+          <label className="inline-flex items-center gap-2 text-xs font-semibold text-gray-700 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={sliderAutoSlide}
+              onChange={(e) => setSliderAutoSlide(e.target.checked)}
+              className="accent-violet-600"
+            />
+            Auto-Slide
+          </label>
+          <div className="flex items-center gap-1.5">
+            <Clock className="w-3.5 h-3.5 text-violet-600" />
+            <select
+              aria-label="Automatic slider interval"
+              value={sliderIntervalSec}
+              disabled={!sliderAutoSlide}
+              onChange={(e) => setSliderIntervalSec(Number(e.target.value))}
+              className="rounded-lg bg-gray-50 border border-gray-200 px-2 py-1 text-xs font-mono text-gray-800 disabled:opacity-50"
+            >
+              {[3, 4, 5, 6, 8, 10, 12, 15].map((sec) => (
+                <option key={sec} value={sec}>
+                  {sec}s / slide
+                </option>
+              ))}
+            </select>
+          </div>
+          <button
+            type="button"
+            disabled={savingTiming}
+            onClick={() => void handleSaveSliderTiming()}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 disabled:opacity-60 text-white text-xs font-semibold cursor-pointer"
+          >
+            {savingTiming ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Save className="w-3.5 h-3.5" />
+            )}
+            Save Timing
+          </button>
+        </div>
       </div>
 
       {msg && (
@@ -133,25 +334,48 @@ export const AdminBannersPanel: React.FC<{ banners: BannerItem[] }> = ({ banners
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+      {errMsg && (
+        <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-xs sm:text-sm text-red-700 flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+          <span>{errMsg}</span>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
         <form onSubmit={handleSubmit} className="lg:col-span-5 app-card rounded-2xl p-5 space-y-3.5">
           <h3 className="font-display text-base font-bold text-gray-900">
-            {editingId ? 'Edit Banner' : 'Add Banner'}
+            {editingId ? 'Edit Promotional Banner' : 'Add Promotional Banner'}
           </h3>
+
           <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">Title *</label>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Banner Title *</label>
             <input
               type="text"
               required
               maxLength={140}
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g., NEET 2027 Chemistry Batch"
+              placeholder="e.g., NEET 2027 Chemistry Target Batch"
               className={inputCls}
             />
           </div>
+
           <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">Announcement Line</label>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Subtitle</label>
+            <input
+              type="text"
+              maxLength={180}
+              value={subtitle}
+              onChange={(e) => setSubtitle(e.target.value)}
+              placeholder="e.g., Session 2026–2027 · Guided by Sonu Sir #Baba"
+              className={inputCls}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              Highlight Tag / Announcement (Optional)
+            </label>
             <input
               type="text"
               maxLength={240}
@@ -161,6 +385,7 @@ export const AdminBannersPanel: React.FC<{ banners: BannerItem[] }> = ({ banners
               className={inputCls}
             />
           </div>
+
           <div>
             <label className="block text-xs font-medium text-gray-700 mb-1">Description</label>
             <textarea
@@ -168,16 +393,74 @@ export const AdminBannersPanel: React.FC<{ banners: BannerItem[] }> = ({ banners
               maxLength={480}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="Short banner details..."
+              placeholder="Short promotional highlight shown on the banner..."
               className={inputCls}
             />
           </div>
+
+          {/* Call-to-Action Button & Destination */}
+          <div className="rounded-xl bg-gray-50 border border-gray-200 p-3.5 space-y-3">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-800">
+              <Link2 className="w-3.5 h-3.5 text-violet-600" />
+              Call-to-Action Button
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div>
+                <label className="block text-[11px] font-medium text-gray-600 mb-1">
+                  Button Label
+                </label>
+                <input
+                  type="text"
+                  maxLength={60}
+                  value={ctaLabel}
+                  disabled={!ctaPreset}
+                  onChange={(e) => setCtaLabel(e.target.value)}
+                  placeholder="e.g., Apply Now"
+                  className={`${inputCls} disabled:opacity-50`}
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium text-gray-600 mb-1">
+                  Button Destination
+                </label>
+                <select
+                  value={ctaPreset}
+                  onChange={(e) => setCtaPreset(e.target.value)}
+                  className={inputCls}
+                >
+                  {CTA_PRESET_OPTIONS.map((opt) => (
+                    <option key={opt.value || 'none'} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            {ctaPreset === 'custom' && (
+              <div>
+                <label className="block text-[11px] font-medium text-gray-600 mb-1">
+                  External HTTPS URL *
+                </label>
+                <input
+                  type="url"
+                  required
+                  maxLength={300}
+                  value={customCtaUrl}
+                  onChange={(e) => setCustomCtaUrl(e.target.value)}
+                  placeholder="https://example.com/brochure"
+                  className={`${inputCls} font-mono text-xs`}
+                />
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">Order</label>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Slide Order</label>
               <input
                 type="number"
                 min={1}
+                max={999}
                 value={order}
                 onChange={(e) => setOrder(e.target.value)}
                 className={`${inputCls} font-mono`}
@@ -191,18 +474,56 @@ export const AdminBannersPanel: React.FC<{ banners: BannerItem[] }> = ({ banners
                   onChange={(e) => setActive(e.target.checked)}
                   className="accent-violet-600"
                 />
-                Active
+                Active on Homepage
               </label>
             </div>
           </div>
+
           <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">Image (Optional)</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-medium text-gray-700">
+                Banner Image (Recommended 16:9 / Wide)
+              </label>
+              {(file || existingUrl || existingMediaId) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFile(null);
+                    setExistingUrl('');
+                    setExistingMediaId('');
+                  }}
+                  className="text-[11px] font-semibold text-red-600 hover:underline cursor-pointer"
+                >
+                  Remove Image
+                </button>
+              )}
+            </div>
+
+            {(filePreviewUrl || existingUrl || existingMediaId) && (
+              <div className="mb-2 aspect-[16/9] rounded-xl overflow-hidden border border-gray-200 bg-gray-100">
+                {filePreviewUrl ? (
+                  <img
+                    src={filePreviewUrl}
+                    alt="Selected banner preview"
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <ResolvedImage
+                    url={existingUrl}
+                    mediaId={existingMediaId}
+                    alt={title || 'Banner preview'}
+                    className="w-full h-full object-cover"
+                  />
+                )}
+              </div>
+            )}
+
             <label className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-gray-50 hover:bg-violet-50 border border-dashed border-gray-300 hover:border-violet-400 text-xs font-semibold text-violet-700 cursor-pointer transition-colors">
               <Upload className="w-4 h-4" />
-              {file ? file.name : 'Choose Banner Image'}
+              {file ? file.name : existingUrl || existingMediaId ? 'Replace Banner Image' : 'Upload Banner Image'}
               <input
                 type="file"
-                accept="image/*"
+                accept="image/jpeg,image/png,image/webp"
                 onChange={(e) => setFile(e.target.files?.[0] || null)}
                 className="hidden"
               />
@@ -213,10 +534,10 @@ export const AdminBannersPanel: React.FC<{ banners: BannerItem[] }> = ({ banners
             <button
               type="submit"
               disabled={busy}
-              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold cursor-pointer"
+              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-60 text-white text-sm font-semibold cursor-pointer"
             >
               {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              {editingId ? 'Update' : 'Publish'}
+              {editingId ? 'Update Banner' : 'Publish Banner'}
             </button>
             {editingId && (
               <button
@@ -231,17 +552,17 @@ export const AdminBannersPanel: React.FC<{ banners: BannerItem[] }> = ({ banners
         </form>
 
         <div className="lg:col-span-7 space-y-3">
-          {banners.length === 0 ? (
+          {sortedBanners.length === 0 ? (
             <div className="app-card rounded-2xl p-8 text-center text-xs sm:text-sm text-gray-500">
-              No custom banners uploaded yet.
+              No custom banners uploaded yet. Add a promotional banner on the left to replace the default homepage slides.
             </div>
           ) : (
-            banners.map((b) => (
+            sortedBanners.map((b, idx) => (
               <div
                 key={b.id}
                 className="app-card rounded-2xl p-3.5 flex flex-col sm:flex-row gap-3.5 items-start"
               >
-                <div className="w-full sm:w-36 aspect-[16/10] rounded-xl overflow-hidden bg-gray-100 border border-gray-200 shrink-0">
+                <div className="w-full sm:w-40 aspect-[16/10] rounded-xl overflow-hidden bg-violet-50 border border-gray-200 shrink-0">
                   <ResolvedImage
                     url={b.imageUrl}
                     mediaId={b.mediaId}
@@ -252,35 +573,79 @@ export const AdminBannersPanel: React.FC<{ banners: BannerItem[] }> = ({ banners
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-2 text-xs text-gray-500">
-                    <span className="font-mono">#{b.order}</span>
-                    <span className={b.active ? 'text-emerald-600 font-semibold' : 'text-gray-400'}>
-                      {b.active ? 'Active' : 'Hidden'}
+                    <span className="font-mono font-semibold text-violet-700">Slide #{idx + 1}</span>
+                    <span
+                      className={
+                        b.active
+                          ? 'px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 font-semibold text-[11px]'
+                          : 'px-2 py-0.5 rounded-md bg-gray-100 text-gray-500 font-semibold text-[11px]'
+                      }
+                    >
+                      {b.active ? 'Active' : 'Inactive'}
                     </span>
                   </div>
-                  <h4 className="font-display font-bold text-gray-900 text-sm mt-0.5">{b.title}</h4>
+                  <h4 className="font-display font-bold text-gray-900 text-sm mt-1">{b.title}</h4>
+                  {b.subtitle && (
+                    <p className="text-xs text-violet-700 font-medium mt-0.5">{b.subtitle}</p>
+                  )}
                   {b.announcement && (
-                    <p className="text-xs text-violet-700 font-medium mt-0.5">{b.announcement}</p>
+                    <p className="text-[11px] text-gray-500 mt-0.5">{b.announcement}</p>
                   )}
                   {b.description && (
-                    <p className="text-xs text-gray-500 mt-1 line-clamp-2">{b.description}</p>
+                    <p className="text-xs text-gray-600 mt-1 line-clamp-2">{b.description}</p>
+                  )}
+                  {b.ctaLabel && b.ctaTarget && (
+                    <p className="mt-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-violet-50 border border-violet-100 text-[11px] font-semibold text-violet-700">
+                      Button: {b.ctaLabel} → <span className="font-mono">{b.ctaTarget}</span>
+                    </p>
                   )}
 
-                  <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                  <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={reordering || idx === 0}
+                      title="Move banner up"
+                      onClick={() => void handleMoveBanner(idx, -1)}
+                      className="p-1.5 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 disabled:opacity-40 text-gray-600 cursor-pointer"
+                    >
+                      <ArrowUp className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={reordering || idx === sortedBanners.length - 1}
+                      title="Move banner down"
+                      onClick={() => void handleMoveBanner(idx, 1)}
+                      className="p-1.5 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 disabled:opacity-40 text-gray-600 cursor-pointer"
+                    >
+                      <ArrowDown className="w-3.5 h-3.5" />
+                    </button>
                     <button
                       type="button"
                       onClick={() => {
                         setEditingId(b.id);
                         setTitle(b.title);
+                        setSubtitle(b.subtitle || '');
                         setDescription(b.description || '');
                         setAnnouncement(b.announcement || '');
-                        setOrder(String(b.order));
+                        setCtaLabel(b.ctaLabel || '');
+                        const target = b.ctaTarget || '';
+                        if (KNOWN_CTA_PRESETS.has(target)) {
+                          setCtaPreset(target);
+                          setCustomCtaUrl('');
+                        } else {
+                          setCtaPreset('custom');
+                          setCustomCtaUrl(target);
+                        }
+                        setOrder(String(b.order || idx + 1));
                         setActive(b.active);
                         setExistingUrl(b.imageUrl || '');
                         setExistingMediaId(b.mediaId || '');
                         setFile(null);
+                        setErrMsg('');
                       }}
-                      className="px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-xs font-semibold text-gray-700 cursor-pointer"
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-xs font-semibold text-gray-700 cursor-pointer"
                     >
+                      <Edit3 className="w-3.5 h-3.5" />
                       Edit
                     </button>
                     <button
@@ -289,8 +654,11 @@ export const AdminBannersPanel: React.FC<{ banners: BannerItem[] }> = ({ banners
                         void saveBanner({
                           id: b.id,
                           title: b.title,
+                          subtitle: b.subtitle,
                           description: b.description,
                           announcement: b.announcement,
+                          ctaLabel: b.ctaLabel,
+                          ctaTarget: b.ctaTarget,
                           imageUrl: b.imageUrl,
                           mediaId: b.mediaId,
                           order: b.order,
@@ -300,7 +668,7 @@ export const AdminBannersPanel: React.FC<{ banners: BannerItem[] }> = ({ banners
                       className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 text-xs font-semibold text-gray-700 cursor-pointer"
                     >
                       {b.active ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                      {b.active ? 'Hide' : 'Show'}
+                      {b.active ? 'Deactivate' : 'Activate'}
                     </button>
                     <button
                       type="button"
@@ -1004,6 +1372,12 @@ export const AdminSettingsPanel: React.FC<{
   const [renderingPreview, setRenderingPreview] = useState(false);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
 
+  // On-Device Teacher Portrait & Background Studio + Banner Preview state
+  const [studioSourceUrl, setStudioSourceUrl] = useState<string | null>(null);
+  const [savingStudioCutout, setSavingStudioCutout] = useState(false);
+  const [bannerPreviewUrl, setBannerPreviewUrl] = useState<string | null>(null);
+  const [renderingBannerPreview, setRenderingBannerPreview] = useState(false);
+
   const [newUid, setNewUid] = useState('');
   const [newEmail, setNewEmail] = useState('');
   const [newName, setNewName] = useState('');
@@ -1065,7 +1439,7 @@ export const AdminSettingsPanel: React.FC<{
       await saveInstituteSettings(rest);
       setSavedMsg(
         subTab === 'idcard'
-          ? 'Teacher profile and Double-Sided ID Card settings saved to Firebase.'
+          ? 'Teacher profile, portrait banner, and Double-Sided ID Card settings saved to Firebase.'
           : 'Institute settings saved.'
       );
     } catch (err) {
@@ -1075,14 +1449,15 @@ export const AdminSettingsPanel: React.FC<{
     }
   };
 
-  const handleTeacherPhotoUpload = async (file: File | null) => {
+  // Upload Original Teacher Photo -> persists original + opens On-Device Background Removal Studio
+  const handleUploadOriginalTeacherPhoto = async (file: File | null) => {
     if (!file) return;
     if (!file.type.startsWith('image/')) {
       setErrorMsg('Please select a valid JPG, PNG, or WebP image for the teacher photograph.');
       return;
     }
-    if (file.size > 5 * 1024 * 1024) {
-      setErrorMsg('Teacher photograph must be smaller than 5 MB.');
+    if (file.size > 6 * 1024 * 1024) {
+      setErrorMsg('Teacher photograph must be smaller than 6 MB.');
       return;
     }
 
@@ -1090,20 +1465,136 @@ export const AdminSettingsPanel: React.FC<{
     setErrorMsg('');
     setSavedMsg('');
     try {
-      const uploaded = await uploadTeacherProfilePhoto(file);
+      // Read local data URL immediately so Canvas background removal never hits CORS issues
+      const localDataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error('Could not read uploaded image.'));
+        reader.readAsDataURL(file);
+      });
+
+      const uploadedOriginal = await uploadTeacherProfilePhoto(file, false, file.name);
       const nextForm: InstituteSettings = {
         ...form,
-        teacherPhotoUrl: uploaded.url || '',
-        teacherPhotoMediaId: uploaded.mediaId || '',
+        teacherPhotoOriginalUrl: uploadedOriginal.url || '',
+        teacherPhotoOriginalMediaId: uploadedOriginal.mediaId || '',
+        teacherPhotoUrl: uploadedOriginal.url || '',
+        teacherPhotoMediaId: uploadedOriginal.mediaId || '',
+        teacherPhotoIsCutout: false,
       };
       setForm(nextForm);
       const { id: _id, updatedAt: _u, ...rest } = nextForm;
       await saveInstituteSettings(rest);
-      setSavedMsg('Teacher photograph uploaded and applied to Student ID Card back side.');
+
+      // Immediately open interactive On-Device Background Removal & Portrait Studio
+      setStudioSourceUrl(localDataUrl);
+      setSavedMsg(
+        'Original teacher photo uploaded. Use the Portrait Studio to remove the background and balance lighting, or close to keep the standard photo.'
+      );
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Could not upload teacher photograph.');
     } finally {
       setUploadingPhoto(false);
+    }
+  };
+
+  // Direct Upload of an externally edited Transparent PNG Cutout
+  const handleUploadEditedPng = async (file: File | null) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setErrorMsg('Please select a valid PNG image file.');
+      return;
+    }
+    if (file.size > 6 * 1024 * 1024) {
+      setErrorMsg('Edited PNG file must be smaller than 6 MB.');
+      return;
+    }
+
+    setUploadingPhoto(true);
+    setErrorMsg('');
+    setSavedMsg('');
+    try {
+      const hasAlpha = await detectImageHasTransparency(file);
+      const uploadedPng = await uploadTeacherProfilePhoto(file, true, file.name);
+      const nextForm: InstituteSettings = {
+        ...form,
+        teacherPhotoUrl: uploadedPng.url || '',
+        teacherPhotoMediaId: uploadedPng.mediaId || '',
+        teacherPhotoIsCutout: hasAlpha,
+      };
+      setForm(nextForm);
+      const { id: _id, updatedAt: _u, ...rest } = nextForm;
+      await saveInstituteSettings(rest);
+      setSavedMsg(
+        hasAlpha
+          ? 'Transparent PNG cutout uploaded and applied to ID Card back side and Teacher Profile.'
+          : 'Edited PNG uploaded and applied to ID Card back side and Teacher Profile.'
+      );
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Could not upload edited PNG.');
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
+
+  // Open Background Removal Studio on currently stored Original (or active) photo
+  const handleOpenBackgroundStudio = async () => {
+    setErrorMsg('');
+    const source = await resolveMediaSource(
+      form.teacherPhotoOriginalUrl || form.teacherPhotoUrl,
+      form.teacherPhotoOriginalMediaId || form.teacherPhotoMediaId,
+      false
+    );
+    if (!source) {
+      setErrorMsg('Please upload an original teacher photograph first.');
+      return;
+    }
+    setStudioSourceUrl(source);
+  };
+
+  // Save processed transparent PNG cutout from local Canvas Studio
+  const handleApplyStudioCutout = async (result: PortraitCutoutResult, isCutout: boolean) => {
+    setSavingStudioCutout(true);
+    setErrorMsg('');
+    setSavedMsg('');
+    try {
+      const uploaded = await uploadTeacherProfilePhoto(
+        result.pngBlob,
+        true,
+        `${(form.teacherName || 'teacher').replace(/\s+/g, '_')}_cutout.png`
+      );
+      const nextForm: InstituteSettings = {
+        ...form,
+        teacherPhotoUrl: uploaded.url || '',
+        teacherPhotoMediaId: uploaded.mediaId || '',
+        teacherPhotoIsCutout: isCutout,
+      };
+      setForm(nextForm);
+      const { id: _id, updatedAt: _u, ...rest } = nextForm;
+      await saveInstituteSettings(rest);
+      setStudioSourceUrl(null);
+      setSavedMsg(
+        isCutout
+          ? 'Transparent PNG portrait cutout saved and applied to ID Card back side & homepage.'
+          : 'Enhanced teacher portrait saved and applied to ID Card back side & homepage.'
+      );
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Could not save processed cutout.');
+    } finally {
+      setSavingStudioCutout(false);
+    }
+  };
+
+  const handleOpenTeacherBannerPreview = async () => {
+    setRenderingBannerPreview(true);
+    setErrorMsg('');
+    try {
+      const url = await renderTeacherBannerPreviewDataUrl(form);
+      setBannerPreviewUrl(url);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Could not render teacher banner preview.');
+    } finally {
+      setRenderingBannerPreview(false);
     }
   };
 
@@ -1116,11 +1607,14 @@ export const AdminSettingsPanel: React.FC<{
         ...form,
         teacherPhotoUrl: '',
         teacherPhotoMediaId: '',
+        teacherPhotoOriginalUrl: '',
+        teacherPhotoOriginalMediaId: '',
+        teacherPhotoIsCutout: false,
       };
       setForm(nextForm);
       const { id: _id, updatedAt: _u, ...rest } = nextForm;
       await saveInstituteSettings(rest);
-      setSavedMsg('Teacher photograph removed from ID Card back side.');
+      setSavedMsg('Teacher photograph removed from ID Card back side and Teacher Profile.');
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Could not remove teacher photograph.');
     } finally {
@@ -1426,80 +1920,144 @@ export const AdminSettingsPanel: React.FC<{
         /* ADMIN ID CARD & TEACHER PROFILE STUDIO (CR80 DOUBLE-SIDED)      */
         /* =============================================================== */
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
-          {/* Left: Teacher Profile & Back Side Editor */}
+          {/* Left: Teacher Profile & Back Side Portrait Studio */}
           <form onSubmit={handleSave} className="xl:col-span-6 app-card rounded-2xl p-5 space-y-4">
             <div>
               <h3 className="font-display text-base font-bold text-gray-900">
-                Teacher Profile (ID Card Back Side)
+                Teacher Portrait Studio (ID Card Back Side &amp; Homepage)
               </h3>
               <p className="text-xs text-gray-500 mt-0.5">
-                Only verified details you enter below appear on the ID card back. Leave any optional contact or bio field blank to hide it.
+                Upload the actual photograph of {form.teacherName || 'SONU SIR #BABA'}, remove the background locally into a transparent PNG cutout, or upload an edited PNG directly.
               </p>
             </div>
 
-            {/* Teacher Photograph Upload (Strictly Admin-Uploaded — Never Stock) */}
-            <div className="rounded-2xl bg-gray-50 border border-gray-200 p-4 flex flex-col sm:flex-row items-start sm:items-center gap-4">
-              <div className="w-20 h-24 rounded-xl overflow-hidden border border-violet-200 bg-violet-50 flex items-center justify-center shrink-0">
-                {hasTeacherPhoto ? (
-                  <ResolvedImage
-                    url={form.teacherPhotoUrl}
-                    mediaId={form.teacherPhotoMediaId}
-                    alt={form.teacherName || 'Teacher Photograph'}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <div className="text-center px-1.5">
-                    <ImageIcon className="w-6 h-6 text-violet-400 mx-auto" />
-                    <p className="text-[10px] font-semibold text-violet-700 mt-1 leading-tight">
-                      No Photo
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              <div className="flex-1 min-w-0 space-y-2">
-                <div>
-                  <p className="text-xs font-bold text-gray-900">Official Teacher Photograph</p>
-                  <p className="text-[11px] text-gray-500">
-                    Upload a real portrait photograph of {form.teacherName || 'SONU SIR #BABA'} for the ID Card back side.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <label className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold cursor-pointer transition-colors">
-                    {uploadingPhoto ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <Upload className="w-3.5 h-3.5" />
-                    )}
-                    {uploadingPhoto
-                      ? 'Uploading...'
-                      : hasTeacherPhoto
-                      ? 'Change Teacher Photo'
-                      : 'Upload Teacher Photo'}
-                    <input
-                      type="file"
-                      accept="image/jpeg,image/png,image/webp"
-                      disabled={uploadingPhoto}
-                      onChange={(e) => {
-                        const f = e.target.files?.[0] || null;
-                        e.target.value = '';
-                        void handleTeacherPhotoUpload(f);
-                      }}
-                      className="hidden"
+            {/* On-Device Teacher Portrait & Background Studio Card */}
+            <div className="rounded-2xl bg-violet-50/40 border border-violet-200/80 p-4 space-y-3.5">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                <div
+                  className={`w-24 h-28 rounded-xl overflow-hidden border shrink-0 flex items-end justify-center ${
+                    form.teacherPhotoIsCutout && hasTeacherPhoto
+                      ? 'border-violet-400 bg-gradient-to-b from-violet-600 via-violet-700 to-violet-900'
+                      : 'border-violet-200 bg-violet-50'
+                  }`}
+                >
+                  {hasTeacherPhoto ? (
+                    <ResolvedImage
+                      url={form.teacherPhotoUrl}
+                      mediaId={form.teacherPhotoMediaId}
+                      alt={form.teacherName || 'Teacher Photograph'}
+                      className={
+                        form.teacherPhotoIsCutout
+                          ? 'w-full h-full object-contain object-bottom drop-shadow-md'
+                          : 'w-full h-full object-cover object-top'
+                      }
                     />
-                  </label>
-                  {hasTeacherPhoto && (
-                    <button
-                      type="button"
-                      disabled={busy || uploadingPhoto}
-                      onClick={() => void handleRemoveTeacherPhoto()}
-                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-red-50 border border-gray-200 text-xs font-semibold text-red-600 cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      Remove Photo
-                    </button>
+                  ) : (
+                    <div className="m-auto text-center px-1.5">
+                      <ImageIcon className="w-6 h-6 text-violet-400 mx-auto" />
+                      <p className="text-[10px] font-semibold text-violet-700 mt-1 leading-tight">
+                        No Photo
+                      </p>
+                    </div>
                   )}
                 </div>
+
+                <div className="flex-1 min-w-0 space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-xs font-bold text-gray-900">
+                      Official Teacher Portrait ({form.teacherName || 'SONU SIR #BABA'})
+                    </p>
+                    {hasTeacherPhoto && (
+                      <span className="px-2 py-0.5 rounded-md bg-white border border-violet-200 text-[10px] font-semibold text-violet-700">
+                        {form.teacherPhotoIsCutout ? 'Transparent PNG Cutout' : 'Standard Photo'}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-gray-600 leading-relaxed">
+                    Uses your actual uploaded photo with on-device background removal &amp; lighting adjustment (local browser canvas — no AI face alteration).
+                  </p>
+                </div>
+              </div>
+
+              {/* Action Controls Row */}
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <label className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold cursor-pointer transition-colors">
+                  {uploadingPhoto ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Upload className="w-3.5 h-3.5" />
+                  )}
+                  {uploadingPhoto
+                    ? 'Uploading...'
+                    : hasTeacherPhoto
+                    ? 'Replace Original Photo'
+                    : 'Upload Original Photo'}
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    disabled={uploadingPhoto}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0] || null;
+                      e.target.value = '';
+                      void handleUploadOriginalTeacherPhoto(f);
+                    }}
+                    className="hidden"
+                  />
+                </label>
+
+                {hasTeacherPhoto && (
+                  <button
+                    type="button"
+                    disabled={uploadingPhoto || busy}
+                    onClick={() => void handleOpenBackgroundStudio()}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-violet-50 border border-violet-300 text-xs font-semibold text-violet-700 cursor-pointer transition-colors"
+                  >
+                    <Eraser className="w-3.5 h-3.5" />
+                    Remove Background &amp; Tune
+                  </button>
+                )}
+
+                <label className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-gray-50 border border-gray-200 text-xs font-semibold text-gray-800 cursor-pointer transition-colors">
+                  <FileImage className="w-3.5 h-3.5 text-violet-600" />
+                  Upload Edited PNG
+                  <input
+                    type="file"
+                    accept="image/png,image/webp"
+                    disabled={uploadingPhoto}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0] || null;
+                      e.target.value = '';
+                      void handleUploadEditedPng(f);
+                    }}
+                    className="hidden"
+                  />
+                </label>
+
+                <button
+                  type="button"
+                  disabled={renderingBannerPreview}
+                  onClick={() => void handleOpenTeacherBannerPreview()}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-gray-50 border border-gray-200 text-xs font-semibold text-gray-800 cursor-pointer transition-colors"
+                >
+                  {renderingBannerPreview ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-600" />
+                  ) : (
+                    <Sparkles className="w-3.5 h-3.5 text-violet-600" />
+                  )}
+                  Preview Teacher Banner
+                </button>
+
+                {hasTeacherPhoto && (
+                  <button
+                    type="button"
+                    disabled={busy || uploadingPhoto}
+                    onClick={() => void handleRemoveTeacherPhoto()}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-red-50 border border-gray-200 text-xs font-semibold text-red-600 cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Remove
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1518,6 +2076,19 @@ export const AdminSettingsPanel: React.FC<{
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">
+                  Teacher Designation
+                </label>
+                <input
+                  type="text"
+                  maxLength={80}
+                  value={form.teacherDesignation ?? 'Chemistry Teacher'}
+                  onChange={(e) => setForm({ ...form, teacherDesignation: e.target.value })}
+                  placeholder="Chemistry Teacher"
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
                   Institute Signature (Front Side)
                 </label>
                 <input
@@ -1526,19 +2097,6 @@ export const AdminSettingsPanel: React.FC<{
                   value={form.signatureText}
                   onChange={(e) => setForm({ ...form, signatureText: e.target.value })}
                   placeholder="Sonu Sir #Baba"
-                  className={inputCls}
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  Subject Specialization (Optional)
-                </label>
-                <input
-                  type="text"
-                  maxLength={160}
-                  value={form.teacherSpecialization || ''}
-                  onChange={(e) => setForm({ ...form, teacherSpecialization: e.target.value })}
-                  placeholder="e.g., Physical, Organic & Inorganic Chemistry"
                   className={inputCls}
                 />
               </div>
@@ -1559,7 +2117,21 @@ export const AdminSettingsPanel: React.FC<{
 
             <div>
               <label className="block text-xs font-medium text-gray-700 mb-1">
-                Short Teacher Biography (Optional)
+                Subject Specialization (Optional)
+              </label>
+              <input
+                type="text"
+                maxLength={160}
+                value={form.teacherSpecialization || ''}
+                onChange={(e) => setForm({ ...form, teacherSpecialization: e.target.value })}
+                placeholder="e.g., Physical, Organic & Inorganic Chemistry"
+                className={inputCls}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Short Teacher Introduction (ID Card &amp; Homepage)
               </label>
               <textarea
                 rows={3}
@@ -1571,45 +2143,67 @@ export const AdminSettingsPanel: React.FC<{
               />
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  Contact Number (Optional)
-                </label>
-                <input
-                  type="text"
-                  maxLength={30}
-                  value={form.teacherContactNumber || ''}
-                  onChange={(e) => setForm({ ...form, teacherContactNumber: e.target.value })}
-                  placeholder="Verified phone"
-                  className={`${inputCls} font-mono`}
-                />
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-gray-800">
+                  Verified Teacher Contact Details (ID Card Back Side)
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setForm({
+                      ...form,
+                      teacherContactNumber: form.phone || '',
+                      teacherWhatsappNumber: form.whatsappNumber || '',
+                      teacherEmail: form.email || '',
+                    })
+                  }
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-violet-700 hover:underline cursor-pointer"
+                >
+                  <Copy className="w-3 h-3" />
+                  Copy Institute Contact
+                </button>
               </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  WhatsApp Number (Optional)
-                </label>
-                <input
-                  type="text"
-                  maxLength={30}
-                  value={form.teacherWhatsappNumber || ''}
-                  onChange={(e) => setForm({ ...form, teacherWhatsappNumber: e.target.value })}
-                  placeholder="Verified WhatsApp"
-                  className={`${inputCls} font-mono`}
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  Official Email (Optional)
-                </label>
-                <input
-                  type="email"
-                  maxLength={160}
-                  value={form.teacherEmail || ''}
-                  onChange={(e) => setForm({ ...form, teacherEmail: e.target.value })}
-                  placeholder="Verified email"
-                  className={inputCls}
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Contact Number
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={30}
+                    value={form.teacherContactNumber || ''}
+                    onChange={(e) => setForm({ ...form, teacherContactNumber: e.target.value })}
+                    placeholder="Verified phone"
+                    className={`${inputCls} font-mono`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    WhatsApp Number
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={30}
+                    value={form.teacherWhatsappNumber || ''}
+                    onChange={(e) => setForm({ ...form, teacherWhatsappNumber: e.target.value })}
+                    placeholder="Verified WhatsApp"
+                    className={`${inputCls} font-mono`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Official Email
+                  </label>
+                  <input
+                    type="email"
+                    maxLength={160}
+                    value={form.teacherEmail || ''}
+                    onChange={(e) => setForm({ ...form, teacherEmail: e.target.value })}
+                    placeholder="Verified email"
+                    className={inputCls}
+                  />
+                </div>
               </div>
             </div>
 
@@ -1655,7 +2249,7 @@ export const AdminSettingsPanel: React.FC<{
                 className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-60 text-white text-sm font-semibold cursor-pointer"
               >
                 {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                Save ID Card Teacher Profile
+                Save Changes
               </button>
             </div>
           </form>
@@ -1780,6 +2374,66 @@ export const AdminSettingsPanel: React.FC<{
                 <Printer className="w-3.5 h-3.5 text-violet-600" />
                 Print Both Sides
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* On-Device Teacher Portrait & Background Studio Modal */}
+      {studioSourceUrl && (
+        <TeacherPortraitStudioModal
+          sourceUrl={studioSourceUrl}
+          teacherName={form.teacherName || 'SONU SIR #BABA'}
+          saving={savingStudioCutout}
+          onClose={() => setStudioSourceUrl(null)}
+          onApplyCutout={handleApplyStudioCutout}
+        />
+      )}
+
+      {/* Standalone Teacher Profile Promotional Banner Preview Modal */}
+      {bannerPreviewUrl && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setBannerPreviewUrl(null)}
+        >
+          <div
+            className="w-full max-w-4xl bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-3.5 border-b border-gray-200 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="font-display text-base font-bold text-gray-900">
+                  Teacher Profile Promotional Banner Preview
+                </h3>
+                <p className="text-xs text-gray-500">
+                  Purple &amp; white coaching composition for {form.teacherName || 'SONU SIR #BABA'} (matches CR80 ID Card back side).
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <a
+                  href={bannerPreviewUrl}
+                  download={`${(form.teacherName || 'Teacher').replace(/\s+/g, '_')}_Profile_Banner.png`}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Download PNG
+                </a>
+                <button
+                  type="button"
+                  aria-label="Close banner preview"
+                  onClick={() => setBannerPreviewUrl(null)}
+                  className="p-2 rounded-lg text-gray-500 hover:text-gray-900 hover:bg-gray-100 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            <div className="p-5 bg-gray-50">
+              <img
+                src={bannerPreviewUrl}
+                alt="Teacher Profile Banner Preview"
+                className="w-full rounded-xl border border-gray-200 shadow-sm bg-white"
+              />
             </div>
           </div>
         </div>

@@ -15,9 +15,10 @@ function generateMediaId(prefix: string): string {
 }
 
 export async function compressImageFile(
-  file: File,
+  file: File | Blob,
   maxWidth = 960,
-  quality = 0.78
+  quality = 0.78,
+  preserveTransparency = false
 ): Promise<{ dataUrl: string; blob: Blob; mimeType: string }> {
   // Handle PDFs directly if small enough (< 420KB)
   if (file.type === 'application/pdf') {
@@ -33,7 +34,7 @@ export async function compressImageFile(
     return { dataUrl, blob: file, mimeType: 'application/pdf' };
   }
 
-  if (!file.type.startsWith('image/')) {
+  if (file.type && !file.type.startsWith('image/')) {
     throw new Error('Please select a valid image file (JPG, PNG, WebP) or PDF document.');
   }
 
@@ -52,6 +53,39 @@ export async function compressImageFile(
       const ratio = maxWidth / targetW;
       targetW = Math.round(targetW * ratio);
       targetH = Math.round(targetH * ratio);
+    }
+
+    if (preserveTransparency) {
+      const canvas = document.createElement('canvas');
+      let w = targetW;
+      let h = targetH;
+      let dataUrl = '';
+
+      for (let attempt = 0; attempt < 8; attempt++) {
+        canvas.width = Math.max(1, w);
+        canvas.height = Math.max(1, h);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          throw new Error('Canvas 2D context unavailable.');
+        }
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        dataUrl = canvas.toDataURL('image/png');
+        if (dataUrl.length <= 560000 || w <= 220) {
+          break;
+        }
+        w = Math.round(w * 0.84);
+        h = Math.round(h * 0.84);
+      }
+
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob((b) => {
+          if (b) resolve(b);
+          else reject(new Error('Transparent PNG encoding failed.'));
+        }, 'image/png');
+      });
+
+      return { dataUrl, blob, mimeType: 'image/png' };
     }
 
     const canvas = document.createElement('canvas');
@@ -110,15 +144,24 @@ async function tryStorageUpload(blob: Blob, storagePath: string, mimeType: strin
  * Firestore (`privateMedia` for student documents, `publicMedia` for banners/gallery).
  */
 export async function uploadMediaSmart(
-  file: File,
+  file: File | Blob,
   folder: string,
   isPrivate: boolean,
-  maxWidth = 960
+  maxWidth = 960,
+  preserveTransparency = false,
+  fallbackFileName?: string
 ): Promise<UploadedMediaResult> {
-  const { dataUrl, blob, mimeType } = await compressImageFile(file, maxWidth, 0.78);
+  const { dataUrl, blob, mimeType } = await compressImageFile(
+    file,
+    maxWidth,
+    0.78,
+    preserveTransparency
+  );
   const mediaId = generateMediaId(folder.replace(/[^a-zA-Z0-9]/g, '_'));
-  const ext = mimeType === 'application/pdf' ? 'pdf' : 'jpg';
+  const ext = mimeType === 'application/pdf' ? 'pdf' : mimeType === 'image/png' ? 'png' : 'jpg';
   const storagePath = `${folder}/${mediaId}.${ext}`;
+  const safeName =
+    (file instanceof File && file.name) || fallbackFileName || `${mediaId}.${ext}`;
 
   const storageUrl = await tryStorageUpload(blob, storagePath, mimeType);
   if (storageUrl) {
@@ -132,7 +175,7 @@ export async function uploadMediaSmart(
     await setDoc(doc(db, colName, mediaId), {
       dataUrl,
       mimeType,
-      fileName: file.name.slice(0, 150),
+      fileName: safeName.slice(0, 150),
       createdAt: serverTimestamp(),
     });
     mediaCache.set(`${isPrivate ? 'priv' : 'pub'}:${mediaId}`, dataUrl);

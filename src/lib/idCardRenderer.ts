@@ -435,9 +435,10 @@ export async function renderIdCardFrontDataUrl(
 }
 
 /**
- * BACK SIDE — Teacher Profile & Motivational Message (Exact CR80 85.60 mm × 53.98 mm ratio: 1348×850).
- * Displays ONLY verified, admin-managed teacher information and admin-uploaded teacher photograph.
- * Never uses a stock/random person photograph or invented phone/email/qualifications.
+ * BACK SIDE — Upgraded Promotional Teacher Banner & Motivational Message
+ * (Exact CR80 85.60 mm × 53.98 mm ratio at 400 DPI: 1348×850).
+ * Uses ONLY the real admin-uploaded teacher photograph (preserving transparent PNG cutouts
+ * over a soft violet chemistry halo) and verified admin-managed profile details.
  */
 export async function renderIdCardBackDataUrl(settings: InstituteSettings): Promise<string> {
   const W = CARD_PX_W;
@@ -452,12 +453,13 @@ export async function renderIdCardBackDataUrl(settings: InstituteSettings): Prom
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, W, H);
 
-  // Subtle molecular watermark in top-right
+  // Subtle decorative molecular watermark on right half
   ctx.save();
-  ctx.strokeStyle = 'rgba(124, 58, 237, 0.05)';
+  ctx.strokeStyle = 'rgba(124, 58, 237, 0.055)';
   ctx.lineWidth = 2;
-  drawHexagon(ctx, W - 150, 210, 92);
-  drawHexagon(ctx, W - 290, 290, 62);
+  drawHexagon(ctx, W - 130, 195, 96);
+  drawHexagon(ctx, W - 265, 272, 64);
+  drawHexagon(ctx, W - 115, 365, 52);
   ctx.restore();
 
   // Outer CR80 Border
@@ -466,45 +468,85 @@ export async function renderIdCardBackDataUrl(settings: InstituteSettings): Prom
   drawRoundedRect(ctx, 14, 14, W - 28, H - 28, 28);
   ctx.stroke();
 
-  // Top Purple Accent Header Bar: MEET YOUR TEACHER
+  // Top Solid Purple Header Band
   ctx.save();
-  drawRoundedRect(ctx, 16, 16, W - 32, 102, 26);
+  drawRoundedRect(ctx, 16, 16, W - 32, 98, 26);
   ctx.fillStyle = '#6D28D9';
   ctx.fill();
-  ctx.fillRect(16, 86, W - 32, 32);
+  ctx.fillRect(16, 82, W - 32, 32);
   ctx.restore();
 
   ctx.fillStyle = '#A78BFA';
-  ctx.fillRect(16, 118, W - 32, 4);
+  ctx.fillRect(16, 114, W - 32, 4);
 
-  drawMoleculeEmblem(ctx, 74, 67, 22, '#FFFFFF', '#DDD6FE', '#FFFFFF');
+  drawMoleculeEmblem(ctx, 72, 65, 22, '#FFFFFF', '#DDD6FE', '#FFFFFF');
 
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = '700 32px "Outfit", "Plus Jakarta Sans", sans-serif';
-  ctx.fillText('MEET YOUR TEACHER', 118, 78);
+  ctx.font = '700 30px "Outfit", "Plus Jakarta Sans", sans-serif';
+  ctx.fillText('MEET YOUR TEACHER', 114, 75);
 
   ctx.textAlign = 'right';
   ctx.fillStyle = '#EDE9FE';
   ctx.font = '700 15px "JetBrains Mono", monospace';
-  ctx.fillText('OFFICIAL MENTOR PROFILE', W - 48, 74);
+  ctx.fillText(
+    truncateText(ctx, (settings.instituteName || 'THE ZONE OF CHEMISTRY').toUpperCase(), 480),
+    W - 46,
+    72
+  );
   ctx.textAlign = 'left';
 
-  // ---------------- TEACHER PHOTOGRAPH AREA (Left) ----------------
-  const photoX = 50;
-  const photoY = 152;
-  const photoW = 246;
-  const photoH = 296;
+  // ---------------- LEFT HERO PORTRAIT BANNER PANEL ----------------
+  const stageX = 38;
+  const stageY = 138;
+  const stageW = 376;
+  const stageH = 592;
 
   ctx.save();
-  drawRoundedRect(ctx, photoX, photoY, photoW, photoH, 20);
-  ctx.fillStyle = '#F5F3FF';
+  drawRoundedRect(ctx, stageX, stageY, stageW, stageH, 24);
+  const stageGrad = ctx.createLinearGradient(stageX, stageY, stageX + stageW, stageY + stageH);
+  stageGrad.addColorStop(0, '#5B21B6');
+  stageGrad.addColorStop(0.55, '#6D28D9');
+  stageGrad.addColorStop(1, '#4C1D95');
+  ctx.fillStyle = stageGrad;
   ctx.fill();
-  ctx.strokeStyle = '#C4B5FD';
-  ctx.lineWidth = 3;
-  ctx.stroke();
   ctx.clip();
 
-  // ONLY render teacher photo uploaded & managed from Admin Panel (never a stock person!)
+  // Geometric chemistry hexagons inside purple stage
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.13)';
+  ctx.lineWidth = 2;
+  drawHexagon(ctx, stageX + 68, stageY + 86, 56);
+  drawHexagon(ctx, stageX + 162, stageY + 138, 38);
+  drawHexagon(ctx, stageX + stageW - 58, stageY + 94, 48);
+  drawHexagon(ctx, stageX + 66, stageY + stageH - 150, 62);
+
+  // Soft studio violet-white radial halo behind teacher
+  const halo = ctx.createRadialGradient(
+    stageX + stageW / 2,
+    stageY + stageH * 0.44,
+    24,
+    stageX + stageW / 2,
+    stageY + stageH * 0.44,
+    210
+  );
+  halo.addColorStop(0, 'rgba(245, 243, 255, 0.46)');
+  halo.addColorStop(0.58, 'rgba(196, 181, 253, 0.18)');
+  halo.addColorStop(1, 'rgba(91, 33, 182, 0)');
+  ctx.fillStyle = halo;
+  ctx.fillRect(stageX, stageY, stageW, stageH);
+
+  // Subtle decorative molecule dots
+  ctx.fillStyle = 'rgba(221, 214, 254, 0.45)';
+  [
+    [stageX + 46, stageY + 210, 5],
+    [stageX + stageW - 44, stageY + 230, 4],
+    [stageX + stageW - 64, stageY + 184, 3.5],
+  ].forEach(([dx, dy, dr]) => {
+    ctx.beginPath();
+    ctx.arc(dx, dy, dr, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Resolve real teacher photograph (NEVER stock/random face)
   const resolvedTeacherPhoto = await resolveMediaSource(
     settings.teacherPhotoUrl,
     settings.teacherPhotoMediaId,
@@ -512,71 +554,135 @@ export async function renderIdCardBackDataUrl(settings: InstituteSettings): Prom
   );
   const teacherImg = await loadImageSafe(resolvedTeacherPhoto);
 
+  const ribbonH = 98;
+  const portraitAreaH = stageH - ribbonH + 14;
+
   if (teacherImg) {
-    const scale = Math.max(photoW / teacherImg.width, photoH / teacherImg.height);
-    const drawW = teacherImg.width * scale;
-    const drawH = teacherImg.height * scale;
-    const dx = photoX + (photoW - drawW) / 2;
-    const dy = photoY + (photoH - drawH) / 2;
-    ctx.drawImage(teacherImg, dx, dy, drawW, drawH);
+    if (settings.teacherPhotoIsCutout) {
+      // Prominent bottom-anchored cutout floating cleanly over the purple chemistry halo
+      const maxDrawW = stageW - 22;
+      const maxDrawH = portraitAreaH - 18;
+      const scale = Math.min(maxDrawW / teacherImg.width, maxDrawH / teacherImg.height);
+      const drawW = teacherImg.width * scale;
+      const drawH = teacherImg.height * scale;
+      const dx = stageX + (stageW - drawW) / 2;
+      const dy = stageY + portraitAreaH - drawH;
+      ctx.save();
+      ctx.shadowColor = 'rgba(26, 9, 64, 0.38)';
+      ctx.shadowBlur = 22;
+      ctx.shadowOffsetY = 6;
+      ctx.drawImage(teacherImg, dx, dy, drawW, drawH);
+      ctx.restore();
+    } else {
+      // Standard full-frame portrait inside clean rounded white-rimmed inset
+      const pad = 22;
+      const fx = stageX + pad;
+      const fy = stageY + pad;
+      const fw = stageW - pad * 2;
+      const fh = portraitAreaH - pad - 18;
+      ctx.save();
+      drawRoundedRect(ctx, fx, fy, fw, fh, 18);
+      ctx.clip();
+      const scale = Math.max(fw / teacherImg.width, fh / teacherImg.height);
+      const drawW = teacherImg.width * scale;
+      const drawH = teacherImg.height * scale;
+      ctx.drawImage(
+        teacherImg,
+        fx + (fw - drawW) / 2,
+        fy + (fh - drawH) / 2,
+        drawW,
+        drawH
+      );
+      ctx.restore();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.72)';
+      ctx.lineWidth = 3.5;
+      drawRoundedRect(ctx, fx, fy, fw, fh, 18);
+      ctx.stroke();
+    }
   } else {
-    // Clean geometric chemistry emblem placeholder — never a stock/random person!
-    ctx.fillStyle = '#F5F3FF';
-    ctx.fillRect(photoX, photoY, photoW, photoH);
+    // Clean chemistry emblem placeholder when no teacher photo has been uploaded
     drawMoleculeEmblem(
       ctx,
-      photoX + photoW / 2,
-      photoY + photoH / 2 - 22,
-      46,
-      '#7C3AED',
-      '#A78BFA',
-      '#6D28D9'
+      stageX + stageW / 2,
+      stageY + portraitAreaH / 2 - 22,
+      58,
+      '#FFFFFF',
+      '#DDD6FE',
+      '#FFFFFF'
     );
     ctx.textAlign = 'center';
-    ctx.fillStyle = '#6D28D9';
-    ctx.font = '700 16px "Outfit", sans-serif';
-    ctx.fillText('TEACHER PHOTO', photoX + photoW / 2, photoY + photoH - 54);
-    ctx.fillStyle = '#6B7280';
-    ctx.font = '500 13px "Plus Jakarta Sans", sans-serif';
-    ctx.fillText('Managed via Admin Panel', photoX + photoW / 2, photoY + photoH - 30);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = '700 18px "Outfit", sans-serif';
+    ctx.fillText('TEACHER PORTRAIT', stageX + stageW / 2, stageY + portraitAreaH - 68);
+    ctx.fillStyle = '#DDD6FE';
+    ctx.font = '500 14px "Plus Jakarta Sans", sans-serif';
+    ctx.fillText('Upload via Admin Studio', stageX + stageW / 2, stageY + portraitAreaH - 42);
     ctx.textAlign = 'left';
   }
+
+  // Bottom Nameplate Ribbon on Left Stage
+  const ribbonY = stageY + stageH - ribbonH;
+  ctx.fillStyle = 'rgba(24, 16, 48, 0.88)';
+  ctx.fillRect(stageX, ribbonY, stageW, ribbonH);
+  ctx.fillStyle = '#A78BFA';
+  ctx.fillRect(stageX, ribbonY, stageW, 3);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = '800 24px "Outfit", "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(
+    truncateText(ctx, (settings.teacherName || 'SONU SIR #BABA').toUpperCase(), stageW - 28),
+    stageX + stageW / 2,
+    ribbonY + 42
+  );
+  ctx.fillStyle = '#DDD6FE';
+  ctx.font = '600 16px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(
+    truncateText(ctx, (settings.teacherDesignation || 'Chemistry Teacher').trim(), stageW - 28),
+    stageX + stageW / 2,
+    ribbonY + 72
+  );
+  ctx.textAlign = 'left';
   ctx.restore();
 
-  // ---------------- VERIFIED TEACHER PROFILE DETAILS (Right) ----------------
-  const infoX = 332;
-  const infoW = W - infoX - 50; // ~966 px
-  let y = 186;
+  // Crisp subtle violet border around left portrait stage
+  ctx.strokeStyle = '#C4B5FD';
+  ctx.lineWidth = 2.5;
+  drawRoundedRect(ctx, stageX, stageY, stageW, stageH, 24);
+  ctx.stroke();
 
-  // Teacher Name
+  // ---------------- RIGHT PROFILE, CONTACT & MOTIVATIONAL COLUMN ----------------
+  const infoX = 448;
+  const infoW = W - infoX - 42; // ~858 px
+  let y = 178;
+
+  // Teacher Name (Prominent)
   ctx.fillStyle = '#111827';
-  ctx.font = '700 38px "Outfit", "Plus Jakarta Sans", sans-serif';
+  ctx.font = '800 40px "Outfit", "Plus Jakarta Sans", sans-serif';
   ctx.fillText(truncateText(ctx, settings.teacherName || 'SONU SIR #BABA', infoW), infoX, y);
-  y += 30;
+  y += 20;
 
-  // Verified Specialization & Experience line (ONLY render fields entered by Admin)
+  // Designation + Specialization / Experience line
+  const designation = (settings.teacherDesignation || 'Chemistry Teacher').trim();
   const spec = (settings.teacherSpecialization || '').trim();
   const exp = (settings.teacherExperience || '').trim();
-  const metaParts = [spec, exp].filter(Boolean);
-  if (metaParts.length > 0) {
-    ctx.fillStyle = '#6D28D9';
-    ctx.font = '700 19px "Plus Jakarta Sans", sans-serif';
-    ctx.fillText(truncateText(ctx, metaParts.join('  ·  '), infoW), infoX, y + 6);
-    y += 34;
-  } else {
-    y += 10;
-  }
+  const subtitleParts = [designation, spec, exp].filter(Boolean);
 
-  // Divider line
+  ctx.fillStyle = '#6D28D9';
+  ctx.font = '700 19px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(truncateText(ctx, subtitleParts.join('  ·  '), infoW), infoX, y + 18);
+  y += 38;
+
+  // Violet Accent Divider
   ctx.strokeStyle = '#EDE9FE';
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 2.5;
   ctx.beginPath();
   ctx.moveTo(infoX, y);
   ctx.lineTo(infoX + infoW, y);
   ctx.stroke();
   y += 26;
 
-  // Short Biography (ONLY render if Admin entered one)
+  // Short Teacher Introduction (Bio)
   const bio = (settings.teacherBio || '').trim();
   if (bio) {
     ctx.fillStyle = '#374151';
@@ -584,32 +690,34 @@ export async function renderIdCardBackDataUrl(settings: InstituteSettings): Prom
     const bioLines = wrapParagraphs(ctx, bio, infoW, 4);
     bioLines.forEach((line) => {
       if (line === '') {
-        y += 12;
+        y += 10;
       } else {
         ctx.fillText(line, infoX, y);
         y += 27;
       }
     });
-    y += 8;
+    y += 10;
   } else {
-    ctx.fillStyle = '#6B7280';
-    ctx.font = '500 18px "Plus Jakarta Sans", sans-serif';
+    ctx.fillStyle = '#4B5563';
+    ctx.font = '500 19px "Plus Jakarta Sans", sans-serif';
     ctx.fillText(
       truncateText(
         ctx,
-        `${settings.instituteName || 'THE ZONE OF CHEMISTRY'} · ${settings.tagline || 'Learn Chemistry – Build Your Future.'}`,
+        `${settings.instituteName || 'THE ZONE OF CHEMISTRY'} · ${
+          settings.tagline || 'Learn Chemistry – Build Your Future.'
+        }`,
         infoW
       ),
       infoX,
       y
     );
-    y += 34;
+    y += 38;
   }
 
-  // Verified Contact Details (ONLY display admin-entered verified contact fields — NEVER invented!)
+  // Verified Contact Strip (ONLY admin-entered verified values — never invented!)
   const verifiedContacts: { label: string; value: string }[] = [];
   if (settings.teacherContactNumber?.trim()) {
-    verifiedContacts.push({ label: 'CALL', value: settings.teacherContactNumber.trim() });
+    verifiedContacts.push({ label: 'PHONE', value: settings.teacherContactNumber.trim() });
   }
   if (settings.teacherWhatsappNumber?.trim()) {
     verifiedContacts.push({ label: 'WHATSAPP', value: settings.teacherWhatsappNumber.trim() });
@@ -619,8 +727,9 @@ export async function renderIdCardBackDataUrl(settings: InstituteSettings): Prom
   }
 
   if (verifiedContacts.length > 0) {
-    const contactTop = Math.max(y + 4, 376);
-    drawRoundedRect(ctx, infoX, contactTop, infoW, 72, 14);
+    const contactTop = Math.max(y + 2, 356);
+    const contactH = 74;
+    drawRoundedRect(ctx, infoX, contactTop, infoW, contactH, 16);
     ctx.fillStyle = '#F9FAFB';
     ctx.fill();
     ctx.strokeStyle = '#E5E7EB';
@@ -635,34 +744,35 @@ export async function renderIdCardBackDataUrl(settings: InstituteSettings): Prom
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.moveTo(infoX + idx * slotW, contactTop + 14);
-        ctx.lineTo(infoX + idx * slotW, contactTop + 58);
+        ctx.lineTo(infoX + idx * slotW, contactTop + contactH - 14);
         ctx.stroke();
       }
       ctx.fillStyle = '#6D28D9';
       ctx.font = '700 13px "Plus Jakarta Sans", sans-serif';
       ctx.fillText(item.label, sx, contactTop + 28);
       ctx.fillStyle = '#111827';
-      ctx.font = '600 18px "JetBrains Mono", monospace';
-      ctx.fillText(truncateText(ctx, item.value, slotW - 30), sx, contactTop + 54);
+      ctx.font = '600 17px "JetBrains Mono", monospace';
+      ctx.fillText(truncateText(ctx, item.value, slotW - 28), sx, contactTop + 55);
     });
+    y = contactTop + contactH + 20;
+  } else {
+    y = Math.max(y + 12, 392);
   }
 
-  // ---------------- MOTIVATIONAL MESSAGE CARD (Lower Half) ----------------
-  const msgBoxX = 50;
-  const msgBoxY = 474;
-  const msgBoxW = W - 100;
-  const msgBoxH = 250;
+  // ---------------- MOTIVATIONAL MESSAGE CARD (Right Lower Zone) ----------------
+  const msgBoxY = Math.min(Math.max(y, 434), 480);
+  const msgBoxH = 730 - msgBoxY;
 
-  drawRoundedRect(ctx, msgBoxX, msgBoxY, msgBoxW, msgBoxH, 20);
+  drawRoundedRect(ctx, infoX, msgBoxY, infoW, msgBoxH, 20);
   ctx.fillStyle = '#F5F3FF';
   ctx.fill();
   ctx.strokeStyle = '#DDD6FE';
-  ctx.lineWidth = 2.5;
+  ctx.lineWidth = 2;
   ctx.stroke();
 
   // Left vertical purple accent bar inside message card
   ctx.save();
-  drawRoundedRect(ctx, msgBoxX + 18, msgBoxY + 22, 7, msgBoxH - 44, 4);
+  drawRoundedRect(ctx, infoX + 16, msgBoxY + 20, 7, msgBoxH - 40, 4);
   ctx.fillStyle = '#7C3AED';
   ctx.fill();
   ctx.restore();
@@ -671,44 +781,44 @@ export async function renderIdCardBackDataUrl(settings: InstituteSettings): Prom
     (settings.idCardMotivationalMessage || '').trim() || DEFAULT_ID_CARD_MOTIVATIONAL_MESSAGE;
 
   ctx.fillStyle = '#6D28D9';
-  ctx.font = '700 15px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText('MESSAGE FOR STUDENTS', msgBoxX + 46, msgBoxY + 38);
+  ctx.font = '700 14px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText('MESSAGE FOR STUDENTS', infoX + 42, msgBoxY + 36);
 
   ctx.fillStyle = '#1F2937';
-  ctx.font = '600 22px "Plus Jakarta Sans", sans-serif';
-  const msgLines = wrapParagraphs(ctx, motivationalText, msgBoxW - 92, 7);
-  let msgY = msgBoxY + 74;
+  ctx.font = '600 20px "Plus Jakarta Sans", sans-serif';
+  const maxMsgLines = Math.max(3, Math.floor((msgBoxH - 58) / 28));
+  const msgLines = wrapParagraphs(ctx, motivationalText, infoW - 76, maxMsgLines);
+  let msgY = msgBoxY + 68;
   msgLines.forEach((line) => {
     if (line === '') {
-      msgY += 14;
+      msgY += 12;
     } else {
-      ctx.fillText(line, msgBoxX + 46, msgY);
-      msgY += 30;
+      ctx.fillText(line, infoX + 42, msgY);
+      msgY += 27;
     }
   });
 
   // ---------------- BOTTOM FOOTER BRANDING ----------------
-  const footerY = H - 104;
+  const footerY = H - 96;
   ctx.save();
-  drawRoundedRect(ctx, 16, footerY, W - 32, 88, 24);
+  drawRoundedRect(ctx, 16, footerY, W - 32, 80, 24);
   ctx.fillStyle = '#111827';
   ctx.fill();
-  // Square top corners of footer strip
   ctx.fillRect(16, footerY, W - 32, 24);
   ctx.restore();
 
   ctx.textAlign = 'center';
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = '700 24px "Outfit", "Plus Jakarta Sans", sans-serif';
+  ctx.font = '700 22px "Outfit", "Plus Jakarta Sans", sans-serif';
   ctx.fillText(
     (settings.instituteName || 'THE ZONE OF CHEMISTRY').toUpperCase(),
     W / 2,
-    footerY + 38
+    footerY + 34
   );
 
   ctx.fillStyle = '#C4B5FD';
-  ctx.font = '700 17px "JetBrains Mono", monospace';
-  ctx.fillText('LEARN  •  PRACTICE  •  SUCCEED', W / 2, footerY + 68);
+  ctx.font = '700 16px "JetBrains Mono", monospace';
+  ctx.fillText('LEARN  •  PRACTICE  •  SUCCEED', W / 2, footerY + 62);
   ctx.textAlign = 'left';
 
   return canvas.toDataURL('image/png', 1.0);

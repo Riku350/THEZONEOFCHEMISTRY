@@ -246,6 +246,33 @@ export const DIRTY_DOZEN_CASES: AdversarialPayloadCase[] = [
     },
     expectedResult: 'PERMISSION_DENIED',
     enforcedBy: 'isAdmin() && isValidAttendanceLookupIndex(incoming())'
+  },
+  {
+    id: 23,
+    name: 'Unauthorized Banner Write or Unsafe CTA Target Scheme',
+    collection: 'banners',
+    operation: 'create',
+    auth: null,
+    docId: 'banner_evil_1',
+    payload: {
+      title: 'Click Here',
+      ctaTarget: 'javascript:alert(1)',
+      order: 1,
+      active: true
+    },
+    expectedResult: 'PERMISSION_DENIED',
+    enforcedBy: 'isAdmin() && isValidBanner(incoming()) && safe ctaTarget validation'
+  },
+  {
+    id: 24,
+    name: 'Out-of-Bounds Banner Slider Interval',
+    collection: 'settings',
+    operation: 'update',
+    auth: { uid: 'owner-uid', email: 'rikudatabackup@gmail.com', email_verified: true },
+    docId: 'main',
+    payload: { bannerSliderIntervalSec: 0 },
+    expectedResult: 'PERMISSION_DENIED',
+    enforcedBy: 'data.bannerSliderIntervalSec >= 2 && data.bannerSliderIntervalSec <= 30'
   }
 ];
 

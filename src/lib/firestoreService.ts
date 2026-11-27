@@ -1700,6 +1700,28 @@ export async function verifyQrCodeAgainstFirestore(
 // Admin CMS Operations: Banners, Gallery, Notices, Courses, Batches, Fees, Settings
 // -----------------------------------------------------------------------------
 
+const ALLOWED_INTERNAL_CTA_TARGETS = new Set([
+  'apply',
+  'attendance',
+  'track',
+  'whatsapp',
+  '#courses',
+  '#batches',
+  '#about',
+  '#gallery',
+  '#contact',
+]);
+
+export function sanitizeBannerCtaTarget(raw?: string): string {
+  const val = (raw || '').trim().slice(0, 300);
+  if (!val) return '';
+  if (ALLOWED_INTERNAL_CTA_TARGETS.has(val)) return val;
+  if (/^https:\/\/[a-zA-Z0-9._~:/?#[\]@!$&'()*+,;=%-]+$/.test(val)) {
+    return val;
+  }
+  return '';
+}
+
 export async function saveBanner(
   banner: Omit<BannerItem, 'id' | 'updatedAt'> & { id?: string },
   imageFile?: File | null
@@ -1709,24 +1731,54 @@ export async function saveBanner(
   let mediaId = banner.mediaId || '';
 
   if (imageFile) {
-    const uploaded = await uploadMediaSmart(imageFile, 'banners', false, 1280);
+    const uploaded = await uploadMediaSmart(imageFile, 'banners', false, 1440);
     imageUrl = uploaded.url;
     mediaId = uploaded.mediaId;
   }
 
+  const safeTarget = sanitizeBannerCtaTarget(banner.ctaTarget);
+
   try {
     await setDoc(doc(db, 'banners', id), {
       title: banner.title.trim().slice(0, 140),
+      subtitle: (banner.subtitle || '').trim().slice(0, 180),
       description: (banner.description || '').trim().slice(0, 500),
       announcement: (banner.announcement || '').trim().slice(0, 240),
+      ctaLabel: (banner.ctaLabel || '').trim().slice(0, 60),
+      ctaTarget: safeTarget,
       imageUrl,
       mediaId,
-      order: Number(banner.order) || 1,
+      order: Math.max(0, Math.min(1000, Number(banner.order) || 1)),
       active: Boolean(banner.active),
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `banners/${id}`);
+  }
+}
+
+export async function reorderBanners(orderedBanners: BannerItem[]): Promise<void> {
+  if (orderedBanners.length === 0) return;
+  try {
+    const batch = writeBatch(db);
+    orderedBanners.forEach((b, idx) => {
+      batch.set(doc(db, 'banners', sanitizeId(b.id)), {
+        title: b.title.trim().slice(0, 140),
+        subtitle: (b.subtitle || '').trim().slice(0, 180),
+        description: (b.description || '').trim().slice(0, 500),
+        announcement: (b.announcement || '').trim().slice(0, 240),
+        ctaLabel: (b.ctaLabel || '').trim().slice(0, 60),
+        ctaTarget: sanitizeBannerCtaTarget(b.ctaTarget),
+        imageUrl: b.imageUrl || '',
+        mediaId: b.mediaId || '',
+        order: idx + 1,
+        active: Boolean(b.active),
+        updatedAt: serverTimestamp(),
+      });
+    });
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, 'banners/reorder');
   }
 }
 
@@ -1914,14 +1966,29 @@ export async function deleteFeeRule(id: string): Promise<void> {
 }
 
 export async function uploadTeacherProfilePhoto(
-  file: File
+  file: File | Blob,
+  preserveTransparency = false,
+  fileName?: string
 ): Promise<{ url: string; mediaId: string }> {
-  return uploadMediaSmart(file, 'teacher_profile', false, 640);
+  return uploadMediaSmart(
+    file,
+    'teacher_profile',
+    false,
+    preserveTransparency ? 720 : 800,
+    preserveTransparency,
+    fileName
+  );
 }
 
 export async function saveInstituteSettings(
   settings: Omit<InstituteSettings, 'id' | 'updatedAt'>
 ): Promise<void> {
+  const sliderIntervalRaw = Number(settings.bannerSliderIntervalSec);
+  const bannerSliderIntervalSec =
+    Number.isFinite(sliderIntervalRaw) && sliderIntervalRaw >= 2 && sliderIntervalRaw <= 30
+      ? Math.round(sliderIntervalRaw)
+      : 5;
+
   try {
     await setDoc(doc(db, 'settings', 'main'), {
       instituteName: settings.instituteName.trim().slice(0, 120),
@@ -1937,8 +2004,14 @@ export async function saveInstituteSettings(
       address: settings.address.trim().slice(0, 300),
       signatureText: settings.signatureText.trim().slice(0, 80),
       attendanceExitTracking: Boolean(settings.attendanceExitTracking),
+      bannerSliderIntervalSec,
+      bannerAutoSlide: settings.bannerAutoSlide !== false,
       teacherPhotoUrl: (settings.teacherPhotoUrl || '').trim().slice(0, 2000),
       teacherPhotoMediaId: (settings.teacherPhotoMediaId || '').trim().slice(0, 128),
+      teacherPhotoOriginalUrl: (settings.teacherPhotoOriginalUrl || '').trim().slice(0, 2000),
+      teacherPhotoOriginalMediaId: (settings.teacherPhotoOriginalMediaId || '').trim().slice(0, 128),
+      teacherPhotoIsCutout: Boolean(settings.teacherPhotoIsCutout),
+      teacherDesignation: (settings.teacherDesignation || 'Chemistry Teacher').trim().slice(0, 80),
       teacherBio: (settings.teacherBio || '').trim().slice(0, 600),
       teacherExperience: (settings.teacherExperience || '').trim().slice(0, 120),
       teacherSpecialization: (settings.teacherSpecialization || '').trim().slice(0, 160),

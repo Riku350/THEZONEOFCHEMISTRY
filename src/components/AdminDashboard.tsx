@@ -380,7 +380,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     { id: 'attendance', label: 'Attendance', icon: <CalendarCheck className="w-4 h-4" /> },
     { id: 'scanner', label: 'QR Scanner', icon: <QrCode className="w-4 h-4" /> },
     { id: 'fees', label: 'Fees', icon: <CreditCard className="w-4 h-4" /> },
-    { id: 'banners', label: 'Banners', icon: <LayoutTemplate className="w-4 h-4" /> },
+    { id: 'banners', label: 'Homepage Banners', icon: <LayoutTemplate className="w-4 h-4" /> },
     { id: 'gallery', label: 'Gallery', icon: <ImageIcon className="w-4 h-4" /> },
     { id: 'notices', label: 'Notices & Courses', icon: <Bell className="w-4 h-4" /> },
     { id: 'settings', label: 'Settings', icon: <Settings className="w-4 h-4" /> },
@@ -1182,7 +1182,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           )}
 
           {/* TAB 6: BANNER MANAGEMENT */}
-          {activeTab === 'banners' && <AdminBannersPanel banners={banners} />}
+          {activeTab === 'banners' && (
+            <AdminBannersPanel banners={banners} settings={settings} />
+          )}
 
           {/* TAB 7: GALLERY MANAGEMENT */}
           {activeTab === 'gallery' && <AdminGalleryPanel gallery={gallery} />}

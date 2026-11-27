@@ -221,8 +221,11 @@ export interface PaymentRecord {
 export interface BannerItem {
   id: string;
   title: string;
+  subtitle?: string;
   description?: string;
   announcement?: string;
+  ctaLabel?: string;
+  ctaTarget?: string;
   imageUrl?: string;
   mediaId?: string;
   order: number;
@@ -277,8 +280,14 @@ export interface InstituteSettings {
   address: string;
   signatureText: string;
   attendanceExitTracking?: boolean;
+  bannerSliderIntervalSec?: number;
+  bannerAutoSlide?: boolean;
   teacherPhotoUrl?: string;
   teacherPhotoMediaId?: string;
+  teacherPhotoOriginalUrl?: string;
+  teacherPhotoOriginalMediaId?: string;
+  teacherPhotoIsCutout?: boolean;
+  teacherDesignation?: string;
   teacherBio?: string;
   teacherExperience?: string;
   teacherSpecialization?: string;
