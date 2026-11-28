@@ -1044,45 +1044,95 @@ export async function downloadIdCardPdf(
   pdf.save(`${student.studentId}_${safeName}_DoubleSided_ID_Card.pdf`);
 }
 
-export function downloadPaymentReceiptPdf(
+export async function downloadPaymentReceiptPdf(
   payment: PaymentRecord,
   settings: InstituteSettings,
   totalFee?: number,
   totalPaid?: number
-): void {
+): Promise<void> {
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+
+  // 1. Load Teacher Portrait Background
+  const teacherBgUrl = settings.teacherPhotoOriginalUrl || settings.teacherPhotoUrl || '';
+  let bgImgData: string | null = null;
+  if (teacherBgUrl || settings.teacherPhotoOriginalMediaId || settings.teacherPhotoMediaId) {
+    try {
+      const resolved = await resolveMediaSource(
+        teacherBgUrl,
+        settings.teacherPhotoOriginalMediaId || settings.teacherPhotoMediaId,
+        false
+      );
+      if (resolved) {
+        const resp = await fetch(resolved);
+        const blob = await resp.blob();
+        bgImgData = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.readAsDataURL(blob);
+        });
+      }
+    } catch {
+      // Ignore background image load failures
+    }
+  }
+
+  // Draw background image if available
+  if (bgImgData) {
+    try {
+      pdf.addImage(bgImgData, 'JPEG', 0, 0, pageWidth, pageHeight, undefined, 'FAST');
+    } catch {
+      // fallback
+    }
+  } else {
+    pdf.setFillColor(248, 246, 255);
+    pdf.rect(0, 0, pageWidth, pageHeight, 'F');
+  }
+
+  // 2. Translucent White Overlay for readability
+  pdf.setFillColor(255, 255, 255);
+  pdf.setGState(new (pdf as any).GState({ opacity: 0.93 }));
+  pdf.rect(10, 10, pageWidth - 20, pageHeight - 20, 'F');
+  pdf.setGState(new (pdf as any).GState({ opacity: 1.0 }));
+
+  // Border frame
+  pdf.setDrawColor(124, 58, 237); // violet-600
+  pdf.setLineWidth(0.6);
+  pdf.roundedRect(10, 10, pageWidth - 20, pageHeight - 20, 3, 3, 'S');
+
   const dateStr = payment.paidAt?.toDate
     ? payment.paidAt.toDate().toLocaleString('en-IN')
     : new Date().toLocaleString('en-IN');
 
-  // Violet Header Banner
+  // Header Banner inside frame
   pdf.setFillColor(109, 40, 217);
-  pdf.rect(0, 0, 210, 42, 'F');
+  pdf.roundedRect(14, 14, pageWidth - 28, 36, 2, 2, 'F');
   pdf.setTextColor(255, 255, 255);
   pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(19);
-  pdf.text(settings.instituteName.toUpperCase(), 16, 18);
+  pdf.setFontSize(18);
+  pdf.text(settings.instituteName.toUpperCase(), 20, 24);
   pdf.setFont('helvetica', 'normal');
-  pdf.setFontSize(11);
+  pdf.setFontSize(10);
   pdf.setTextColor(237, 233, 254);
-  pdf.text(`${settings.teacherName} | ${settings.tagline}`, 16, 27);
-  pdf.setFontSize(9);
-  pdf.text(`${settings.address} | Phone: ${settings.phone}`, 16, 35);
+  pdf.text(`${settings.teacherName} | ${settings.tagline}`, 20, 31);
+  pdf.setFontSize(8.5);
+  pdf.text(`${settings.address} | Phone: ${settings.phone}`, 20, 38);
 
   // Title
   pdf.setTextColor(17, 24, 39);
   pdf.setFont('helvetica', 'bold');
   pdf.setFontSize(14);
-  pdf.text('OFFICIAL FEE PAYMENT RECEIPT', 16, 56);
+  pdf.text('OFFICIAL FEE PAYMENT RECEIPT', 18, 62);
 
   pdf.setFont('helvetica', 'normal');
   pdf.setFontSize(10);
   pdf.setTextColor(75, 85, 99);
-  pdf.text(`Receipt No: ${payment.receiptNumber}`, 16, 65);
-  pdf.text(`Date & Time: ${dateStr}`, 130, 65);
+  pdf.text(`Receipt No: ${payment.receiptNumber}`, 18, 71);
+  pdf.text(`Date & Time: ${dateStr}`, 125, 71);
 
   pdf.setDrawColor(229, 231, 235);
-  pdf.line(16, 70, 194, 70);
+  pdf.line(18, 76, pageWidth - 18, 76);
 
   const rows: [string, string][] = [
     ['Student Name', payment.studentName],
@@ -1095,50 +1145,50 @@ export function downloadPaymentReceiptPdf(
     ['Remarks', payment.notes || '—'],
   ];
 
-  let y = 82;
+  let y = 88;
   rows.forEach(([label, value]) => {
     pdf.setFont('helvetica', 'bold');
     pdf.setTextColor(107, 114, 128);
-    pdf.text(label, 16, y);
+    pdf.text(label, 18, y);
     pdf.setFont('helvetica', 'normal');
     pdf.setTextColor(17, 24, 39);
-    pdf.text(String(value), 78, y);
-    y += 10;
+    pdf.text(String(value), 82, y);
+    y += 9;
   });
 
   y += 6;
   pdf.setFillColor(245, 243, 255);
-  pdf.roundedRect(16, y, 178, 34, 3, 3, 'F');
+  pdf.roundedRect(18, y, pageWidth - 36, 32, 3, 3, 'F');
   pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(12);
+  pdf.setFontSize(11);
   pdf.setTextColor(17, 24, 39);
-  pdf.text('Amount Received (INR):', 24, y + 13);
-  pdf.setFontSize(16);
+  pdf.text('Amount Received (INR):', 24, y + 12);
+  pdf.setFontSize(15);
   pdf.setTextColor(109, 40, 217);
-  pdf.text(`Rs. ${payment.amount.toLocaleString('en-IN')}/-`, 186, y + 13, { align: 'right' });
+  pdf.text(`Rs. ${payment.amount.toLocaleString('en-IN')}/-`, pageWidth - 24, y + 12, { align: 'right' });
 
   if (typeof totalFee === 'number' && typeof totalPaid === 'number') {
     const balance = Math.max(0, totalFee - totalPaid);
-    pdf.setFontSize(10);
+    pdf.setFontSize(9.5);
     pdf.setTextColor(75, 85, 99);
     pdf.text(
       `Total Course Fee: Rs. ${totalFee.toLocaleString('en-IN')}   |   Total Paid: Rs. ${totalPaid.toLocaleString('en-IN')}   |   Balance Due: Rs. ${balance.toLocaleString('en-IN')}`,
       24,
-      y + 26
+      y + 24
     );
   }
 
-  const sigY = y + 60;
+  const sigY = y + 54;
   pdf.setDrawColor(209, 213, 219);
-  pdf.line(132, sigY, 192, sigY);
+  pdf.line(pageWidth - 75, sigY, pageWidth - 18, sigY);
   pdf.setFont('helvetica', 'bold');
   pdf.setFontSize(10);
   pdf.setTextColor(17, 24, 39);
-  pdf.text(settings.signatureText || 'Sonu Sir #Baba', 162, sigY - 4, { align: 'center' });
+  pdf.text(settings.signatureText || 'Sonu Sir #Baba', pageWidth - 46, sigY - 4, { align: 'center' });
   pdf.setFont('helvetica', 'normal');
   pdf.setFontSize(9);
   pdf.setTextColor(107, 114, 128);
-  pdf.text('Authorized Institute Signature', 162, sigY + 6, { align: 'center' });
+  pdf.text('Authorized Institute Signature', pageWidth - 46, sigY + 5, { align: 'center' });
 
   pdf.save(`Receipt_${payment.receiptNumber}_${payment.studentName.replace(/\s+/g, '_')}.pdf`);
 }
