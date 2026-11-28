@@ -28,6 +28,7 @@ import {
   InstituteSettings,
   NoticeItem,
   PublicView,
+  TeacherBannerItem,
 } from '../types';
 import { ResolvedImage } from './ResolvedImage';
 import { PromoBannerSlider } from './PromoBannerSlider';
@@ -41,6 +42,7 @@ interface HomePageProps {
   banners: BannerItem[];
   gallery: GalleryItem[];
   notices: NoticeItem[];
+  teacherBanners?: TeacherBannerItem[];
   onNavigate: (view: PublicView, preselectCourse?: string) => void;
 }
 
@@ -52,6 +54,7 @@ export const HomePage: React.FC<HomePageProps> = ({
   banners,
   gallery,
   notices,
+  teacherBanners = [],
   onNavigate,
 }) => {
   const [bannerIndex, setBannerIndex] = useState(0);
@@ -353,11 +356,70 @@ export const HomePage: React.FC<HomePageProps> = ({
                 const showLinks =
                   b.socialLinksActive !== false &&
                   Boolean(b.whatsappUrl || b.telegramUrl || b.instagramUrl);
+                const batchTeacherBanners = teacherBanners.filter(
+                  (tb) =>
+                    tb.status === 'approved' &&
+                    tb.active &&
+                    (tb.batchId === b.id ||
+                      (tb.className &&
+                        b.className &&
+                        tb.className.toLowerCase() === b.className.toLowerCase()))
+                );
                 return (
                   <div
                     key={b.id}
-                    className="px-4 py-3.5 space-y-2.5 hover:bg-gray-50/70 transition-colors"
+                    className="p-4 space-y-3 hover:bg-gray-50/70 transition-colors"
                   >
+                    {batchTeacherBanners.map((tb) => (
+                      <div
+                        key={tb.id}
+                        className="rounded-xl overflow-hidden border border-violet-200 bg-violet-50/50 p-3.5 space-y-2.5"
+                      >
+                        {tb.imageUrl && (
+                          <div className="h-32 rounded-lg overflow-hidden bg-gray-100">
+                            <ResolvedImage
+                              url={tb.imageUrl}
+                              mediaId={tb.mediaId}
+                              alt={tb.title}
+                              className="w-full h-full object-cover"
+                            />
+                          </div>
+                        )}
+                        <div>
+                          <p className="text-xs font-bold text-violet-900">{tb.title}</p>
+                          {tb.description && (
+                            <p className="text-xs text-gray-600 mt-0.5 leading-relaxed">
+                              {tb.description}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {tb.whatsappUrl && (
+                            <a
+                              href={tb.whatsappUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold transition-colors"
+                            >
+                              <MessageCircle className="w-3.5 h-3.5" />
+                              Join Batch WhatsApp
+                            </a>
+                          )}
+                          {tb.telegramUrl && (
+                            <a
+                              href={tb.telegramUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-semibold transition-colors"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              Join Batch Telegram
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center gap-3 min-w-0">
                         <div className="w-9 h-9 rounded-xl bg-violet-50 border border-violet-100 text-violet-600 flex items-center justify-center overflow-hidden shrink-0 p-1">

@@ -226,6 +226,28 @@ export interface PaymentRecord {
   paidAt: TimestampLike | null;
 }
 
+export type BannerApprovalStatus = 'pending' | 'approved' | 'rejected';
+
+export interface TeacherBannerItem {
+  id: string;
+  teacherEmail: string;
+  title: string;
+  description?: string;
+  className: string;
+  batchId?: string;
+  batchName: string;
+  batchTiming?: string;
+  whatsappUrl?: string;
+  telegramUrl?: string;
+  imageUrl?: string;
+  mediaId?: string;
+  status: BannerApprovalStatus;
+  active: boolean;
+  order: number;
+  createdAt?: TimestampLike | null;
+  updatedAt?: TimestampLike | null;
+}
+
 export interface BannerItem {
   id: string;
   title: string;

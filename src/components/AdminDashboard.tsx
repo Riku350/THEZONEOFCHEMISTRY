@@ -285,6 +285,65 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     };
   }, [applications, students, payments]);
 
+  const pendingPaymentStudents = useMemo(() => {
+    const list: {
+      id: string;
+      name: string;
+      identifier: string;
+      mobile: string;
+      classOrCourse: string;
+      batch: string;
+      feeAmount: number;
+      paidAmount: number;
+      balance: number;
+      status: string;
+    }[] = [];
+
+    students.forEach((s) => {
+      const balance = Math.max(0, (s.feeAmount || 0) - (s.paidAmount || 0));
+      const status = (s.paymentStatus || '').trim().toUpperCase();
+      if (status === 'PENDING' || status === 'PARTIAL' || balance > 0) {
+        list.push({
+          id: s.studentId,
+          name: s.studentName,
+          identifier: s.studentId,
+          mobile: s.studentMobile || '',
+          classOrCourse: `${s.studentClass} • ${s.course}`,
+          batch: s.batch,
+          feeAmount: s.feeAmount || 0,
+          paidAmount: s.paidAmount || 0,
+          balance,
+          status: status || (balance > 0 ? 'PENDING' : 'PAID'),
+        });
+      }
+    });
+
+    applications
+      .filter((a) => a.status === 'approved' || a.status === 'pending')
+      .forEach((a) => {
+        const balance = Math.max(0, (a.feeAmount || 0) - (a.paidAmount || 0));
+        const status = (a.paymentStatus || '').trim().toUpperCase();
+        if (status === 'PENDING' || status === 'PARTIAL' || balance > 0) {
+          if (!list.some((l) => l.identifier === a.applicationNumber || l.identifier === a.studentId)) {
+            list.push({
+              id: a.id,
+              name: a.studentName,
+              identifier: a.applicationNumber,
+              mobile: a.studentMobile || a.studentWhatsapp || '',
+              classOrCourse: `${a.studentClass} • ${a.course}`,
+              batch: a.batch,
+              feeAmount: a.feeAmount || 0,
+              paidAmount: a.paidAmount || 0,
+              balance,
+              status: status || 'PENDING',
+            });
+          }
+        }
+      });
+
+    return list.sort((a, b) => b.balance - a.balance);
+  }, [students, applications]);
+
   const filteredApplications = useMemo(() => {
     const q = appSearch.trim().toLowerCase();
     return applications.filter((a) => {
@@ -739,6 +798,90 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     </>
                   )}
                 </div>
+              </div>
+
+              {/* Dedicated Section: Students with PENDING or PARTIAL Payment Status */}
+              <div className="app-card rounded-2xl p-4 sm:p-6 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-gray-100">
+                  <div>
+                    <h2 className="font-display text-base font-bold text-gray-900">
+                      Pending &amp; Partial Payment Accounts
+                    </h2>
+                    <p className="text-xs text-gray-500">
+                      Students and applicants with PENDING or PARTIAL payment status and their remaining fee balances.
+                    </p>
+                  </div>
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-200 text-xs font-semibold">
+                    {pendingPaymentStudents.length} Outstanding Accounts
+                  </span>
+                </div>
+
+                {pendingPaymentStudents.length === 0 ? (
+                  <div className="text-center py-8 text-gray-400 text-xs">
+                    <CheckCircle2 className="w-7 h-7 text-emerald-500 mx-auto mb-2" />
+                    All student fee accounts are fully paid! No pending or partial balances.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse text-xs sm:text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-200 text-gray-500 uppercase tracking-wider text-[11px]">
+                          <th className="py-2.5 px-3">Student Name &amp; ID</th>
+                          <th className="py-2.5 px-3">Class &amp; Course</th>
+                          <th className="py-2.5 px-3 text-right">Fee / Paid</th>
+                          <th className="py-2.5 px-3 text-right">Remaining Balance</th>
+                          <th className="py-2.5 px-3 text-center">Payment Status</th>
+                          <th className="py-2.5 px-3 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {pendingPaymentStudents.map((item) => (
+                          <tr key={item.id} className="hover:bg-gray-50 transition-colors">
+                            <td className="py-3 px-3">
+                              <p className="font-bold text-gray-900">{item.name}</p>
+                              <p className="font-mono text-xs text-violet-700 tabular-nums">{item.identifier}</p>
+                            </td>
+                            <td className="py-3 px-3 text-gray-700">{item.classOrCourse}</td>
+                            <td className="py-3 px-3 text-right font-mono tabular-nums">
+                              <span className="text-gray-900">₹{item.feeAmount.toLocaleString('en-IN')}</span>
+                              <span className="text-gray-400 mx-1">/</span>
+                              <span className="text-emerald-600">₹{item.paidAmount.toLocaleString('en-IN')}</span>
+                            </td>
+                            <td className="py-3 px-3 text-right font-mono font-bold text-amber-600 tabular-nums">
+                              ₹{item.balance.toLocaleString('en-IN')}
+                            </td>
+                            <td className="py-3 px-3 text-center">
+                              <span
+                                className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                                  item.status === 'PENDING'
+                                    ? 'bg-red-50 text-red-700 border border-red-200'
+                                    : 'bg-amber-50 text-amber-700 border border-amber-200'
+                                }`}
+                              >
+                                {item.status}
+                              </span>
+                            </td>
+                            <td className="py-3 px-3 text-right">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const cleanMob = item.mobile.replace(/[^0-9]/g, '');
+                                  const phone = cleanMob.length === 10 ? `91${cleanMob}` : cleanMob;
+                                  const msg = `Hello ${item.name}, this is a payment reminder from ${settings.instituteName || 'The Zone of Chemistry'}. Your remaining fee balance is ₹${item.balance.toLocaleString('en-IN')}. Please clear your dues at your earliest convenience. Thank you! — Sonu Sir (#BABA)`;
+                                  window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, '_blank');
+                                }}
+                                disabled={!item.mobile}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-semibold transition-colors cursor-pointer"
+                              >
+                                Notify WhatsApp
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
 
               {/* Pending Applications Quick List */}

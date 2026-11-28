@@ -4,6 +4,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   onSnapshot,
   query,
   runTransaction,
@@ -53,6 +54,7 @@ import {
   StudentClass,
   StudentRecord,
   StudentStream,
+  TeacherBannerItem,
   StudentTrackingProfile,
   TrackingIndexDoc,
   TrackingIndexEntry,
@@ -291,20 +293,36 @@ export interface PublicInstituteData {
   banners: BannerItem[];
   gallery: GalleryItem[];
   notices: NoticeItem[];
+  teacherBanners: TeacherBannerItem[];
 }
 
 export async function fetchPublicInstituteData(): Promise<PublicInstituteData> {
   try {
-    const [settingsSnap, coursesSnap, batchesSnap, feesSnap, bannersSnap, gallerySnap, noticesSnap] =
-      await Promise.all([
-        getDoc(doc(db, 'settings', 'main')).catch(() => null),
-        getDocs(query(collection(db, 'courses'), where('active', '==', true))).catch(() => null),
-        getDocs(query(collection(db, 'batches'), where('active', '==', true))).catch(() => null),
-        getDocs(query(collection(db, 'fees'), where('active', '==', true))).catch(() => null),
-        getDocs(query(collection(db, 'banners'), where('active', '==', true))).catch(() => null),
-        getDocs(query(collection(db, 'gallery'), where('active', '==', true))).catch(() => null),
-        getDocs(query(collection(db, 'notices'), where('active', '==', true))).catch(() => null),
-      ]);
+    const [
+      settingsSnap,
+      coursesSnap,
+      batchesSnap,
+      feesSnap,
+      bannersSnap,
+      gallerySnap,
+      noticesSnap,
+      teacherBannersSnap,
+    ] = await Promise.all([
+      getDoc(doc(db, 'settings', 'main')).catch(() => null),
+      getDocs(query(collection(db, 'courses'), where('active', '==', true))).catch(() => null),
+      getDocs(query(collection(db, 'batches'), where('active', '==', true))).catch(() => null),
+      getDocs(query(collection(db, 'fees'), where('active', '==', true))).catch(() => null),
+      getDocs(query(collection(db, 'banners'), where('active', '==', true))).catch(() => null),
+      getDocs(query(collection(db, 'gallery'), where('active', '==', true))).catch(() => null),
+      getDocs(query(collection(db, 'notices'), where('active', '==', true))).catch(() => null),
+      getDocs(
+        query(
+          collection(db, 'teacherBanners'),
+          where('status', '==', 'approved'),
+          where('active', '==', true)
+        )
+      ).catch(() => null),
+    ]);
 
     const settings: InstituteSettings =
       settingsSnap && settingsSnap.exists()
@@ -360,7 +378,14 @@ export async function fetchPublicInstituteData(): Promise<PublicInstituteData> {
             })
         : DEFAULT_NOTICES;
 
-    return { settings, courses, batches, feeRules, banners, gallery, notices };
+    const teacherBanners: TeacherBannerItem[] =
+      teacherBannersSnap && !teacherBannersSnap.empty
+        ? teacherBannersSnap.docs
+            .map((d) => ({ id: d.id, ...d.data() }) as TeacherBannerItem)
+            .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+        : [];
+
+    return { settings, courses, batches, feeRules, banners, gallery, notices, teacherBanners };
   } catch (error) {
     console.error('Error fetching public institute data:', error);
     return {
@@ -371,6 +396,7 @@ export async function fetchPublicInstituteData(): Promise<PublicInstituteData> {
       banners: DEFAULT_BANNERS,
       gallery: DEFAULT_GALLERY,
       notices: DEFAULT_NOTICES,
+      teacherBanners: [],
     };
   }
 }
@@ -408,6 +434,31 @@ export async function submitAdmissionApplication(
 ): Promise<{ applicationNumber: string; trackingKey: string }> {
   const applicationNumber = sanitizeId(input.applicationNumber);
   const cleanedMobile = cleanPhone(input.studentMobile);
+  if (cleanedMobile.length !== 10) {
+    throw new Error('Please enter a valid 10-digit Student Mobile Number.');
+  }
+
+  // Strict duplicate admission prevention (One mobile number = One student admission record)
+  const earlyMobLookupId = await buildMobileLookupId(cleanedMobile);
+  const earlyMobSnap = await getDoc(doc(db, 'trackingIndex', earlyMobLookupId)).catch(() => null);
+  if (earlyMobSnap && earlyMobSnap.exists()) {
+    const data = earlyMobSnap.data();
+    const entries = Array.isArray(data?.entries) ? data.entries : [];
+    if (entries.length > 0) {
+      throw new Error(
+        'This mobile number is already registered. One mobile number can be used for only one student admission.'
+      );
+    }
+  }
+
+  const qApp = query(collection(db, 'applications'), where('studentMobile', '==', cleanedMobile), limit(1));
+  const appSnap = await getDocs(qApp).catch(() => null);
+  if (appSnap && !appSnap.empty) {
+    throw new Error(
+      'This mobile number is already registered. One mobile number can be used for only one student admission.'
+    );
+  }
+
   const trackingKey = sanitizeId(`${applicationNumber}_${cleanedMobile}`);
 
   // Upload private documents first + generate compact passport thumbnail for verified tracking profile
@@ -636,6 +687,30 @@ export async function fetchVerifiedTrackingProfile(
     return { id: snap.id, ...snap.data() } as StudentTrackingProfile;
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, `studentTrackingProfiles/${profileKey}`);
+  }
+}
+
+export async function fetchTrackingProfileByApplicationNumber(
+  appOrStudentId: string
+): Promise<StudentTrackingProfile | null> {
+  const norm = sanitizeId(appOrStudentId.trim().toUpperCase());
+  if (!norm) return null;
+  try {
+    const q1 = query(collection(db, 'studentTrackingProfiles'), where('applicationNumber', '==', norm), limit(1));
+    const snap1 = await getDocs(q1);
+    if (!snap1.empty) {
+      const d = snap1.docs[0];
+      return { id: d.id, ...d.data() } as StudentTrackingProfile;
+    }
+    const q2 = query(collection(db, 'studentTrackingProfiles'), where('studentId', '==', norm), limit(1));
+    const snap2 = await getDocs(q2);
+    if (!snap2.empty) {
+      const d = snap2.docs[0];
+      return { id: d.id, ...d.data() } as StudentTrackingProfile;
+    }
+    return null;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `studentTrackingProfiles/query_${norm}`);
   }
 }
 
@@ -1935,6 +2010,83 @@ export async function deleteNotice(id: string): Promise<void> {
     await deleteDoc(doc(db, 'notices', id));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `notices/${id}`);
+  }
+}
+
+export async function saveTeacherBanner(
+  banner: {
+    id?: string;
+    teacherEmail: string;
+    title: string;
+    description?: string;
+    className: string;
+    batchId?: string;
+    batchName: string;
+    batchTiming?: string;
+    whatsappUrl?: string;
+    telegramUrl?: string;
+    active?: boolean;
+    order?: number;
+  },
+  imageFile?: File | null
+): Promise<void> {
+  const id = sanitizeId(banner.id || `tbanner_${Date.now()}`);
+  let imageUrl = '';
+  let mediaId = '';
+
+  if (imageFile) {
+    const uploaded = await uploadMediaSmart(imageFile, 'teacherBanners', false, 1200);
+    imageUrl = uploaded.url;
+    mediaId = uploaded.mediaId;
+  }
+
+  try {
+    const docRef = doc(db, 'teacherBanners', id);
+    const existing = await getDoc(docRef).catch(() => null);
+    const existingData = existing?.exists() ? existing.data() : null;
+
+    await setDoc(docRef, {
+      teacherEmail: banner.teacherEmail.trim().toLowerCase().slice(0, 200),
+      title: banner.title.trim().slice(0, 140),
+      description: (banner.description || '').trim().slice(0, 500),
+      className: (banner.className || 'Class 12').trim().slice(0, 60),
+      batchId: (banner.batchId || '').trim().slice(0, 100),
+      batchName: (banner.batchName || '').trim().slice(0, 100),
+      batchTiming: (banner.batchTiming || '').trim().slice(0, 80),
+      whatsappUrl: sanitizeBannerCtaTarget(banner.whatsappUrl),
+      telegramUrl: sanitizeBannerCtaTarget(banner.telegramUrl),
+      imageUrl: imageUrl || existingData?.imageUrl || '',
+      mediaId: mediaId || existingData?.mediaId || '',
+      status: existingData?.status === 'approved' ? 'approved' : 'pending',
+      active: banner.active !== false,
+      order: Number(banner.order) || 1,
+      createdAt: existingData?.createdAt || serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `teacherBanners/${id}`);
+  }
+}
+
+export async function setTeacherBannerStatus(
+  id: string,
+  status: 'approved' | 'rejected'
+): Promise<void> {
+  try {
+    await updateDoc(doc(db, 'teacherBanners', id), {
+      status,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `teacherBanners/${id}`);
+  }
+}
+
+export async function deleteTeacherBanner(id: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'teacherBanners', id));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `teacherBanners/${id}`);
   }
 }
 

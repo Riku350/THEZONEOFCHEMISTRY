@@ -16,32 +16,7 @@ export type RateLimitResult =
   | { ok: false; reason: 'rate_limited'; retryAfterSeconds: number; message: string }
   | { ok: false; reason: 'invalid_request' | 'service_unavailable'; status?: number; message: string };
 
-export type OtpRequestResult =
-  | {
-      ok: true;
-      challengeId: string;
-      expiresAt: number;
-      expiresInSeconds: number;
-      cooldownSeconds: number;
-      deliveryMode: 'sms' | 'preview';
-      maskedMobile: string;
-      previewOtp?: string;
-    }
-  | {
-      ok: false;
-      code: string;
-      retryAfterSeconds?: number;
-      message: string;
-    };
 
-export type OtpVerifyResult =
-  | { ok: true; verificationToken: string }
-  | {
-      ok: false;
-      code: string;
-      attemptsLeft?: number;
-      message: string;
-    };
 
 const FALLBACK_WINDOW_MS = 5 * 60 * 1000;
 const FALLBACK_SEARCH_MAX = 30;
@@ -214,102 +189,7 @@ export async function checkSearchRateLimit(
   };
 }
 
-export async function requestTrackingOtp(params: {
-  mobile: string;
-  mobileHash: string;
-}): Promise<OtpRequestResult> {
-  try {
-    const { response, json, isJson } = await fetchJsonWithTimeout('/api/tracking/otp/request', {
-      method: 'POST',
-      body: JSON.stringify(params),
-    });
 
-    if (!isJson || !json) {
-      return {
-        ok: false,
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'OTP verification service is temporarily unavailable. Please try again shortly.',
-      };
-    }
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        code: typeof json.code === 'string' ? json.code : `HTTP_${response.status}`,
-        retryAfterSeconds:
-          typeof json.retryAfterSeconds === 'number' ? json.retryAfterSeconds : undefined,
-        message:
-          typeof json.error === 'string' && json.error
-            ? json.error
-            : 'Could not send verification OTP. Please try again.',
-      };
-    }
-
-    return {
-      ok: true,
-      challengeId: String(json.challengeId || ''),
-      expiresAt:
-        typeof json.expiresAt === 'number'
-          ? json.expiresAt
-          : Date.now() + (Number(json.expiresInSeconds) || 300) * 1000,
-      expiresInSeconds: Number(json.expiresInSeconds) || 300,
-      cooldownSeconds: Number(json.cooldownSeconds) || 30,
-      deliveryMode: json.deliveryMode === 'sms' ? 'sms' : 'preview',
-      maskedMobile: String(json.maskedMobile || ''),
-      previewOtp: typeof json.previewOtp === 'string' ? json.previewOtp : undefined,
-    };
-  } catch {
-    return {
-      ok: false,
-      code: 'NETWORK_ERROR',
-      message: 'Network error while requesting OTP. Please check your connection and try again.',
-    };
-  }
-}
-
-export async function verifyTrackingOtp(params: {
-  challengeId: string;
-  otp: string;
-  mobileHash: string;
-}): Promise<OtpVerifyResult> {
-  try {
-    const { response, json, isJson } = await fetchJsonWithTimeout('/api/tracking/otp/verify', {
-      method: 'POST',
-      body: JSON.stringify(params),
-    });
-
-    if (!isJson || !json) {
-      return {
-        ok: false,
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'OTP verification service is temporarily unavailable. Please try again shortly.',
-      };
-    }
-
-    if (!response.ok || json.verified !== true) {
-      return {
-        ok: false,
-        code: typeof json.code === 'string' ? json.code : `HTTP_${response.status}`,
-        attemptsLeft: typeof json.attemptsLeft === 'number' ? json.attemptsLeft : undefined,
-        message:
-          typeof json.error === 'string' && json.error
-            ? json.error
-            : 'Invalid or expired OTP. Please try again.',
-      };
-    }
-
-    return {
-      ok: true,
-      verificationToken: String(json.verificationToken || ''),
-    };
-  } catch {
-    return {
-      ok: false,
-      code: 'NETWORK_ERROR',
-      message: 'Unable to reach verification server. Please check your connection and retry.',
-    };
-  }
-}
 
 /**
  * Classifies Firestore connectivity / offline / backend errors so UI can display an

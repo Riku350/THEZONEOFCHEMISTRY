@@ -271,12 +271,16 @@ export const AdmissionForm: React.FC<AdmissionFormProps> = ({
     } catch (err) {
       console.error('Admission submit error:', err);
       const rawMsg = err instanceof Error ? err.message : 'Unable to submit admission form.';
-      if (rawMsg.includes('already exists') || rawMsg.includes('PERMISSION_DENIED')) {
-        sessionAppNumberRef.current = generateApplicationNumber();
+      if (rawMsg.includes('already registered')) {
+        setErrorMsg(rawMsg);
+      } else {
+        if (rawMsg.includes('already exists') || rawMsg.includes('PERMISSION_DENIED')) {
+          sessionAppNumberRef.current = generateApplicationNumber();
+        }
+        setErrorMsg(
+          'Submission could not be completed. Please verify all fields and uploaded files, then try again.'
+        );
       }
-      setErrorMsg(
-        'Submission could not be completed. Please verify all fields and uploaded files, then try again.'
-      );
     } finally {
       setSubmitting(false);
     }
@@ -289,11 +293,11 @@ export const AdmissionForm: React.FC<AdmissionFormProps> = ({
           <div className="w-12 h-12 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-600 flex items-center justify-center mx-auto mb-4">
             <CheckCircle2 className="w-6 h-6" />
           </div>
-          <h1 className="font-display text-xl sm:text-2xl font-bold text-gray-900">
-            Application Submitted
+          <h1 className="font-display text-lg sm:text-xl font-bold text-gray-900">
+            ADMISSION FORM SUBMITTED SUCCESSFULLY
           </h1>
-          <p className="mt-2 text-sm text-gray-600 leading-relaxed">
-            Your admission application has been submitted successfully. Please wait for admin approval.
+          <p className="mt-2 text-xs sm:text-sm text-gray-600 leading-relaxed">
+            Your admission application has been successfully submitted. You can download your official admission form PDF immediately or track your admission status.
           </p>
 
           <div className="mt-6 rounded-xl bg-gray-50 border border-gray-200 p-4 text-left space-y-3">
@@ -320,26 +324,30 @@ export const AdmissionForm: React.FC<AdmissionFormProps> = ({
 
             <div className="grid grid-cols-2 gap-3 text-xs sm:text-sm">
               <div>
-                <p className="text-xs text-gray-500">Student</p>
+                <p className="text-xs text-gray-500">Student Name</p>
                 <p className="font-semibold text-gray-900">{submittedResult.studentName}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Class</p>
+                <p className="font-semibold text-gray-900">{studentClass}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Selected Batch</p>
+                <p className="font-medium text-gray-800">{submittedResult.batch}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Submission Date</p>
+                <p className="font-mono text-xs text-gray-900 tabular-nums">
+                  {new Date().toLocaleDateString('en-IN', {
+                    day: '2-digit',
+                    month: 'short',
+                    year: 'numeric',
+                  })}
+                </p>
               </div>
               <div>
                 <p className="text-xs text-gray-500">Mobile</p>
                 <p className="font-mono text-gray-900 tabular-nums">{submittedResult.studentMobile}</p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-500">Course</p>
-                <p className="font-medium text-gray-800">{submittedResult.course}</p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-500">Batch</p>
-                <p className="font-medium text-gray-800">{submittedResult.batch}</p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-500">Course Fee</p>
-                <p className="font-mono font-semibold text-gray-900 tabular-nums">
-                  ₹{submittedResult.feeAmount.toLocaleString('en-IN')}
-                </p>
               </div>
               <div>
                 <p className="text-xs text-gray-500">Status</p>
@@ -364,28 +372,20 @@ export const AdmissionForm: React.FC<AdmissionFormProps> = ({
                 ) : (
                   <>
                     <Download className="w-4 h-4" />
-                    Download Admission Form PDF
+                    DOWNLOAD ADMISSION FORM PDF
                   </>
                 )}
               </button>
               <button
                 type="button"
-                disabled={downloadingPdf}
-                onClick={() => void handleDownloadPdf()}
+                onClick={() => onNavigate('track')}
                 className="flex-1 inline-flex items-center justify-center gap-2 py-3 rounded-xl bg-white hover:bg-violet-50 border border-violet-200 text-violet-700 text-xs sm:text-sm font-semibold cursor-pointer"
               >
                 <FileText className="w-4 h-4" />
-                View Admission Form
+                TRACK MY ADMISSION
               </button>
             </div>
-            <div className="flex items-center justify-between pt-2">
-              <button
-                type="button"
-                onClick={() => onNavigate('track')}
-                className="text-xs font-semibold text-violet-700 hover:text-violet-900 cursor-pointer"
-              >
-                Track Application Status →
-              </button>
+            <div className="flex items-center justify-center pt-2">
               <button
                 type="button"
                 onClick={() => onNavigate('home')}
@@ -442,9 +442,20 @@ export const AdmissionForm: React.FC<AdmissionFormProps> = ({
       )}
 
       {errorMsg && (
-        <div className="mb-5 rounded-xl bg-red-50 border border-red-200 p-3.5 flex items-start gap-2.5 text-xs sm:text-sm text-red-700">
-          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-600" />
-          <span>{errorMsg}</span>
+        <div className="mb-5 rounded-xl bg-red-50 border border-red-200 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs sm:text-sm text-red-700">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-600" />
+            <span>{errorMsg}</span>
+          </div>
+          {errorMsg.includes('already registered') && (
+            <button
+              type="button"
+              onClick={() => onNavigate('track')}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold text-xs transition-colors shrink-0 cursor-pointer"
+            >
+              Track Existing Admission →
+            </button>
+          )}
         </div>
       )}
 

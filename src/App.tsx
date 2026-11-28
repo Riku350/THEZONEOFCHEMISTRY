@@ -43,6 +43,7 @@ export default function App() {
     banners: DEFAULT_BANNERS,
     gallery: DEFAULT_GALLERY,
     notices: DEFAULT_NOTICES,
+    teacherBanners: [],
   });
 
   // Admin auth state
@@ -187,6 +188,7 @@ export default function App() {
                 banners={publicData.banners}
                 gallery={publicData.gallery}
                 notices={publicData.notices}
+                teacherBanners={publicData.teacherBanners}
                 onNavigate={handleNavigate}
               />
             )}

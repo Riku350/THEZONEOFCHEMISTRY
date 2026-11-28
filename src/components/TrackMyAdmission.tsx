@@ -19,17 +19,14 @@ import {
 } from 'lucide-react';
 import {
   cleanPhone,
-  fetchVerifiedTrackingProfile,
+  fetchTrackingProfileByApplicationNumber,
   lookupTrackingIndexById,
   lookupTrackingIndexByMobile,
-  sha256Hex,
 } from '../lib/firestoreService';
 import { downloadIdCardPdf } from '../lib/idCardRenderer';
 import {
   checkSearchRateLimit,
   isFirebaseUnavailableError,
-  requestTrackingOtp,
-  verifyTrackingOtp,
 } from '../lib/trackingApi';
 import {
   AdmissionStage,
@@ -129,20 +126,7 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
   const [indexDoc, setIndexDoc] = useState<TrackingIndexDoc | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<TrackingIndexEntry | null>(null);
 
-  // OTP verification state
-  const [confirmMobileInput, setConfirmMobileInput] = useState('');
-  const [otpChallengeId, setOtpChallengeId] = useState('');
-  const [otpInput, setOtpInput] = useState('');
-  const [otpPreviewCode, setOtpPreviewCode] = useState('');
-  const [otpDeliveryMode, setOtpDeliveryMode] = useState<'sms' | 'preview' | ''>('');
-  const [otpCooldown, setOtpCooldown] = useState(0);
-  const [otpExpiresAt, setOtpExpiresAt] = useState<number | null>(null);
-  const [otpSecondsLeft, setOtpSecondsLeft] = useState(0);
-  const [otpSending, setOtpSending] = useState(false);
-  const [otpVerifying, setOtpVerifying] = useState(false);
-  const [otpError, setOtpError] = useState('');
-
-  // Verified profile state (populated strictly AFTER OTP verification)
+  // Verified profile state (loaded directly upon search/selection)
   const [verifiedMobile, setVerifiedMobile] = useState('');
   const [verifiedProfile, setVerifiedProfile] = useState<StudentTrackingProfile | null>(null);
 
@@ -205,40 +189,33 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
     return () => window.clearInterval(t);
   }, [rateLimitCountdown]);
 
+  // Load student profile directly when selectedEntry is set
   useEffect(() => {
-    if (otpCooldown <= 0) return;
-    const t = window.setInterval(() => {
-      setOtpCooldown((s) => (s > 1 ? s - 1 : 0));
-    }, 1000);
-    return () => window.clearInterval(t);
-  }, [otpCooldown]);
-
-  useEffect(() => {
-    if (!otpExpiresAt || !otpChallengeId) {
-      setOtpSecondsLeft(0);
+    if (!selectedEntry) {
+      setVerifiedProfile(null);
+      setVerifiedMobile('');
       return;
     }
-    const updateRemaining = () => {
-      setOtpSecondsLeft(Math.max(0, Math.ceil((otpExpiresAt - Date.now()) / 1000)));
+    let cancelled = false;
+    void fetchTrackingProfileByApplicationNumber(selectedEntry.applicationNumber).then((profile) => {
+      if (cancelled) return;
+      if (profile) {
+        setVerifiedProfile(profile);
+        setVerifiedMobile(indexDoc?.maskedMobile || '—');
+      } else {
+        setErrorMsg('Unable to load student admission record. Please try again.');
+      }
+    });
+    return () => {
+      cancelled = true;
     };
-    updateRemaining();
-    const t = window.setInterval(updateRemaining, 1000);
-    return () => window.clearInterval(t);
-  }, [otpExpiresAt, otpChallengeId]);
+  }, [selectedEntry]);
 
   const resetResults = () => {
     setErrorMsg('');
     setNotFound(false);
     setIndexDoc(null);
     setSelectedEntry(null);
-    setConfirmMobileInput('');
-    setOtpChallengeId('');
-    setOtpInput('');
-    setOtpPreviewCode('');
-    setOtpDeliveryMode('');
-    setOtpExpiresAt(null);
-    setOtpSecondsLeft(0);
-    setOtpError('');
     setVerifiedMobile('');
     setVerifiedProfile(null);
     setShowIdCardModal(false);
@@ -272,7 +249,6 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
 
     setSearching(true);
     try {
-      // 1. Fail-closed server-side sliding-window rate limit check
       const rl = await checkSearchRateLimit(mode, 'admission');
       if (!rl.ok) {
         if (rl.reason === 'rate_limited') {
@@ -282,7 +258,6 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
         return;
       }
 
-      // 2. Cryptographic zero-PII Firebase index lookup
       const found =
         mode === 'id'
           ? await lookupTrackingIndexById(trimmed)
@@ -294,11 +269,6 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
       }
 
       setIndexDoc(found);
-      if (mode === 'mobile') {
-        setConfirmMobileInput(cleanPhone(trimmed));
-      }
-
-      // If only a single application matches, pre-select it immediately
       if (found.entries.length === 1) {
         setSelectedEntry(found.entries[0]);
       }
@@ -311,112 +281,6 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
       );
     } finally {
       setSearching(false);
-    }
-  };
-
-  const handleRequestOtp = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!indexDoc || !selectedEntry || otpSending || otpCooldown > 0) return;
-
-    setOtpError('');
-    const candidateMobile = cleanPhone(confirmMobileInput);
-    if (candidateMobile.length !== 10) {
-      setOtpError('Please enter your 10-digit Registered Mobile Number to receive an OTP.');
-      return;
-    }
-
-    // Verify entered mobile matches the SHA-256 hash stored on the Firebase index
-    const enteredHash = await sha256Hex(candidateMobile);
-    if (enteredHash !== indexDoc.mobileHash) {
-      setOtpError(
-        `Mobile number does not match the registered number ending in ${indexDoc.maskedMobile.slice(-4)}.`
-      );
-      return;
-    }
-
-    setOtpSending(true);
-    try {
-      const res = await requestTrackingOtp({
-        mobile: candidateMobile,
-        mobileHash: indexDoc.mobileHash,
-      });
-
-      if (!res.ok) {
-        if (res.retryAfterSeconds) {
-          setOtpCooldown(res.retryAfterSeconds);
-        }
-        setOtpError(res.message);
-        return;
-      }
-
-      setOtpChallengeId(res.challengeId);
-      setOtpDeliveryMode(res.deliveryMode);
-      setOtpPreviewCode(res.previewOtp || '');
-      setOtpCooldown(res.cooldownSeconds);
-      setOtpExpiresAt(res.expiresAt);
-      setOtpInput('');
-    } finally {
-      setOtpSending(false);
-    }
-  };
-
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!indexDoc || !selectedEntry || !otpChallengeId || otpVerifying) return;
-
-    if (otpExpiresAt && Date.now() >= otpExpiresAt) {
-      setOtpError('This OTP has expired. Please click Resend OTP to receive a new code.');
-      return;
-    }
-
-    const cleanOtp = otpInput.replace(/[^0-9]/g, '');
-    if (cleanOtp.length !== 6) {
-      setOtpError('Please enter the 6-digit OTP.');
-      return;
-    }
-
-    setOtpError('');
-    setOtpVerifying(true);
-    try {
-      const verifyRes = await verifyTrackingOtp({
-        challengeId: otpChallengeId,
-        otp: cleanOtp,
-        mobileHash: indexDoc.mobileHash,
-      });
-
-      if (!verifyRes.ok) {
-        if (verifyRes.code === 'OTP_EXPIRED' || verifyRes.code === 'OTP_LOCKED') {
-          setOtpExpiresAt(0);
-          setOtpSecondsLeft(0);
-        }
-        setOtpError(verifyRes.message);
-        return;
-      }
-
-      // Strictly AFTER server OTP verification succeeds, fetch the official profile
-      const cleanedMob = cleanPhone(confirmMobileInput);
-      const profile = await fetchVerifiedTrackingProfile(
-        selectedEntry.applicationNumber,
-        cleanedMob
-      );
-
-      if (!profile) {
-        setOtpError('Verified record could not be loaded. Please contact the institute desk.');
-        return;
-      }
-
-      setVerifiedMobile(cleanedMob);
-      setVerifiedProfile(profile);
-      setOtpPreviewCode('');
-    } catch (err) {
-      console.error('OTP verify failed:', err);
-      setOtpError(
-        isFirebaseUnavailableError(err)
-          ? 'OTP verified, but Firebase is temporarily unavailable while loading your record. Please retry.'
-          : 'Unable to verify OTP right now. Please try again.'
-      );
-    } finally {
-      setOtpVerifying(false);
     }
   };
 
@@ -575,7 +439,7 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
               {indexDoc.entries.length} Applications Linked to {indexDoc.maskedMobile}
             </p>
             <p className="text-xs text-gray-500 mt-0.5">
-              Select your application below. Personal details remain protected until OTP verification.
+              Select your application below to view your admission details and ID card.
             </p>
           </div>
           <div className="space-y-2">
@@ -585,9 +449,6 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
                 type="button"
                 onClick={() => {
                   setSelectedEntry(entry);
-                  setOtpChallengeId('');
-                  setOtpInput('');
-                  setOtpError('');
                   setVerifiedProfile(null);
                 }}
                 className="w-full text-left rounded-xl bg-white hover:border-violet-400 border border-gray-200 px-4 py-3 flex items-center justify-between gap-3 transition-colors cursor-pointer"
@@ -632,9 +493,6 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
                     type="button"
                     onClick={() => {
                       setSelectedEntry(null);
-                      setOtpChallengeId('');
-                      setOtpInput('');
-                      setOtpError('');
                     }}
                     className="px-2.5 py-1 rounded-lg bg-white border border-gray-200 text-xs font-medium text-gray-600 hover:text-gray-900 cursor-pointer"
                   >
@@ -719,160 +577,7 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
             )}
           </div>
 
-          {/* STEP C: OTP Verification Gate (Required Before Revealing Any Private Student Profile) */}
-          {!verifiedProfile && (
-            <div className="rounded-2xl bg-violet-50/40 border border-violet-200 p-4 sm:p-5 space-y-4">
-              <div className="flex items-start gap-3">
-                <div className="w-9 h-9 rounded-xl bg-violet-600 text-white flex items-center justify-center shrink-0">
-                  <ShieldCheck className="w-4 h-4" />
-                </div>
-                <div className="min-w-0">
-                  <h3 className="font-display text-sm sm:text-base font-bold text-gray-900">
-                    Verify Registered Mobile via OTP
-                  </h3>
-                  <p className="text-xs text-gray-600 mt-0.5 leading-relaxed">
-                    To protect student privacy, verify your registered mobile number (
-                    <span className="font-mono font-semibold text-gray-900">
-                      {indexDoc.maskedMobile}
-                    </span>
-                    ) to view your official profile and download your ID Card.
-                  </p>
-                </div>
-              </div>
 
-              {!otpChallengeId ? (
-                <form onSubmit={handleRequestOtp} className="space-y-3">
-                  {mode === 'id' && (
-                    <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">
-                        Confirm Registered 10-Digit Mobile ({indexDoc.maskedMobile})
-                      </label>
-                      <input
-                        type="tel"
-                        inputMode="numeric"
-                        maxLength={10}
-                        required
-                        value={confirmMobileInput}
-                        onChange={(e) =>
-                          setConfirmMobileInput(e.target.value.replace(/[^0-9]/g, '').slice(0, 10))
-                        }
-                        placeholder="Enter 10-digit registered mobile"
-                        className="w-full rounded-xl bg-white border border-gray-200 focus:border-violet-500 px-3.5 py-2.5 text-sm font-mono text-gray-900 placeholder:font-sans placeholder-gray-400 focus:outline-none"
-                      />
-                    </div>
-                  )}
-
-                  {otpError && (
-                    <div className="rounded-xl bg-red-50 border border-red-200 p-3 flex items-start gap-2 text-xs text-red-700">
-                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                      <span>{otpError}</span>
-                    </div>
-                  )}
-
-                  <button
-                    type="submit"
-                    disabled={otpSending || otpCooldown > 0}
-                    className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-60 text-white text-xs sm:text-sm font-semibold transition-colors cursor-pointer"
-                  >
-                    {otpSending ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        Sending OTP...
-                      </>
-                    ) : otpCooldown > 0 ? (
-                      `Wait ${otpCooldown}s`
-                    ) : (
-                      <>
-                        <KeyRound className="w-4 h-4" />
-                        Send OTP to {indexDoc.maskedMobile}
-                      </>
-                    )}
-                  </button>
-                </form>
-              ) : (
-                <form onSubmit={handleVerifyOtp} className="space-y-3">
-                  {otpDeliveryMode === 'preview' && otpPreviewCode ? (
-                    <div className="rounded-xl bg-white border border-violet-200 px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs">
-                      <span className="text-gray-600">
-                        Verification code for{' '}
-                        <span className="font-mono font-semibold text-gray-900">
-                          {indexDoc.maskedMobile}
-                        </span>
-                        :
-                      </span>
-                      <span className="font-mono text-sm font-bold tracking-widest text-violet-700 tabular-nums">
-                        {otpPreviewCode}
-                      </span>
-                    </div>
-                  ) : (
-                    <p className="text-xs text-emerald-700 font-medium">
-                      A 6-digit OTP has been sent via SMS to {indexDoc.maskedMobile}.
-                    </p>
-                  )}
-
-                  <div className="flex flex-col sm:flex-row gap-2.5">
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      maxLength={6}
-                      required
-                      value={otpInput}
-                      onChange={(e) =>
-                        setOtpInput(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))
-                      }
-                      placeholder="Enter 6-digit OTP"
-                      className="flex-1 rounded-xl bg-white border border-gray-200 focus:border-violet-500 px-3.5 py-2.5 text-sm font-mono tracking-widest text-gray-900 placeholder:tracking-normal placeholder:font-sans placeholder-gray-400 focus:outline-none tabular-nums"
-                    />
-                    <button
-                      type="submit"
-                      disabled={otpVerifying}
-                      className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-60 text-white text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap cursor-pointer"
-                    >
-                      {otpVerifying ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          Verifying...
-                        </>
-                      ) : (
-                        <>
-                          <ShieldCheck className="w-4 h-4" />
-                          Verify &amp; View Profile
-                        </>
-                      )}
-                    </button>
-                  </div>
-
-                  {otpError && (
-                    <div className="rounded-xl bg-red-50 border border-red-200 p-3 flex items-start gap-2 text-xs text-red-700">
-                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                      <span>{otpError}</span>
-                    </div>
-                  )}
-
-                  <div className="flex items-center justify-between text-xs text-gray-500">
-                    {otpSecondsLeft > 0 ? (
-                      <span className="font-mono tabular-nums">
-                        Expires in {String(Math.floor(otpSecondsLeft / 60)).padStart(2, '0')}:
-                        {String(otpSecondsLeft % 60).padStart(2, '0')}
-                      </span>
-                    ) : (
-                      <span className="text-red-600 font-semibold">
-                        OTP expired. Click Resend OTP.
-                      </span>
-                    )}
-                    <button
-                      type="button"
-                      disabled={otpSending || otpCooldown > 0}
-                      onClick={() => void handleRequestOtp()}
-                      className="font-semibold text-violet-700 hover:text-violet-900 disabled:text-gray-400 cursor-pointer"
-                    >
-                      {otpCooldown > 0 ? `Resend in ${otpCooldown}s` : 'Resend OTP'}
-                    </button>
-                  </div>
-                </form>
-              )}
-            </div>
-          )}
 
           {/* STEP D: Official Verified Student Profile (Strictly After OTP Verification) */}
           {verifiedProfile && (
