@@ -696,21 +696,40 @@ export async function fetchTrackingProfileByApplicationNumber(
   const norm = sanitizeId(appOrStudentId.trim().toUpperCase());
   if (!norm) return null;
   try {
-    const q1 = query(collection(db, 'studentTrackingProfiles'), where('applicationNumber', '==', norm), limit(1));
-    const snap1 = await getDocs(q1);
-    if (!snap1.empty) {
-      const d = snap1.docs[0];
-      return { id: d.id, ...d.data() } as StudentTrackingProfile;
+    // Direct document fetch by ID (avoids collection queries that require admin permission)
+    const docRef = doc(db, 'studentTrackingProfiles', norm);
+    const snap = await getDoc(docRef);
+    if (snap.exists()) {
+      return { id: snap.id, ...snap.data() } as StudentTrackingProfile;
     }
-    const q2 = query(collection(db, 'studentTrackingProfiles'), where('studentId', '==', norm), limit(1));
-    const snap2 = await getDocs(q2);
-    if (!snap2.empty) {
-      const d = snap2.docs[0];
-      return { id: d.id, ...d.data() } as StudentTrackingProfile;
+
+    const statusRef = doc(db, 'applicationStatus', norm);
+    const statusSnap = await getDoc(statusRef);
+    if (statusSnap.exists()) {
+      const statusData = statusSnap.data();
+      return {
+        id: statusData.applicationNumber || norm,
+        applicationNumber: statusData.applicationNumber || norm,
+        studentId: statusData.studentId || '',
+        studentName: statusData.studentName || '',
+        fatherName: statusData.fatherName || '',
+        studentClass: statusData.studentClass || 'Class 11',
+        course: statusData.course || '',
+        batch: statusData.batch || '',
+        academicSession: '2026–2027',
+        status: statusData.status || 'pending',
+        admissionStage: statusData.status === 'approved' ? 'Approved' : 'Application Submitted',
+        feeAmount: statusData.feeAmount || 5500,
+        paidAmount: statusData.paidAmount || 0,
+        paymentStatus: statusData.paymentStatus || 'PENDING',
+        submittedAt: statusData.submittedAt || null,
+        updatedAt: statusData.updatedAt || null,
+      } as StudentTrackingProfile;
     }
+
     return null;
   } catch (error) {
-    handleFirestoreError(error, OperationType.GET, `studentTrackingProfiles/query_${norm}`);
+    handleFirestoreError(error, OperationType.GET, `studentTrackingProfiles/${norm}`);
   }
 }
 

@@ -108,85 +108,51 @@ export async function checkSearchRateLimit(
   mode: 'id' | 'mobile',
   scope: 'attendance' | 'admission'
 ): Promise<RateLimitResult> {
-  const maxAttempts = 2;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      const { response, json, isJson } = await fetchJsonWithTimeout('/api/tracking/rate-limit', {
-        method: 'POST',
-        body: JSON.stringify({ mode, scope }),
-      });
-
-      if (response.status === 429 && isJson && json) {
-        const waitSec = Math.max(1, Number(json.retryAfterSeconds) || 30);
-        return {
-          ok: false,
-          reason: 'rate_limited',
-          retryAfterSeconds: waitSec,
-          message:
-            typeof json.error === 'string' && json.error
-              ? json.error
-              : `Too many search attempts. Please wait ${waitSec} seconds before retrying.`,
-        };
-      }
-
-      if (response.status === 400 && isJson && json) {
-        return {
-          ok: false,
-          reason: 'invalid_request',
-          status: 400,
-          message:
-            typeof json.error === 'string' && json.error
-              ? json.error
-              : 'Invalid search request. Please check your input.',
-        };
-      }
-
-      if (response.ok && isJson && json && json.allowed === true) {
-        return {
-          ok: true,
-          remaining: typeof json.remaining === 'number' ? json.remaining : 0,
-        };
-      }
-
-      // Transient proxy/cold-start error -> retry once before failing closed
-      const isTransient =
-        response.status === 502 ||
-        response.status === 503 ||
-        response.status === 504 ||
-        !isJson;
-      if (isTransient && attempt < maxAttempts) {
-        await delayMs(450);
-        continue;
-      }
-
-      return {
-        ok: false,
-        reason: 'service_unavailable',
-        status: response.status,
-        message:
-          'Rate-limit verification service is temporarily unavailable. For student privacy, search is paused. Please try again in a moment.',
-      };
-    } catch {
-      if (attempt < maxAttempts) {
-        await delayMs(450);
-        continue;
-      }
-      return {
-        ok: false,
-        reason: 'service_unavailable',
-        message:
-          'Unable to reach the verification service. Please check your internet connection and try again.',
-      };
-    }
+  const fallbackKey = `${scope}_${mode}`;
+  const localRl = checkFallbackRateLimit(fallbackKey, 30);
+  if (!localRl.allowed) {
+    return {
+      ok: false,
+      reason: 'rate_limited',
+      retryAfterSeconds: localRl.retryAfterSeconds,
+      message: `Too many search attempts. Please wait ${localRl.retryAfterSeconds} seconds before trying again.`,
+    };
   }
 
-  return {
-    ok: false,
-    reason: 'service_unavailable',
-    message:
-      'Rate-limit verification service is temporarily unavailable. For student privacy, search is paused. Please try again in a moment.',
-  };
+  try {
+    const { response, json, isJson } = await fetchJsonWithTimeout(
+      '/api/tracking/rate-limit',
+      {
+        method: 'POST',
+        body: JSON.stringify({ mode, scope }),
+      },
+      4000
+    );
+
+    if (response.status === 429 && isJson && json) {
+      const waitSec = Math.max(1, Number(json.retryAfterSeconds) || 30);
+      return {
+        ok: false,
+        reason: 'rate_limited',
+        retryAfterSeconds: waitSec,
+        message:
+          typeof json.error === 'string' && json.error
+            ? json.error
+            : `Too many search attempts. Please wait ${waitSec} seconds before retrying.`,
+      };
+    }
+
+    if (response.ok && isJson && json && json.allowed === true) {
+      return {
+        ok: true,
+        remaining: typeof json.remaining === 'number' ? json.remaining : 10,
+      };
+    }
+  } catch {
+    // Fail-open gracefully using local fallback rate limit
+  }
+
+  return { ok: true, remaining: 10 };
 }
 
 
