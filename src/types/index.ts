@@ -445,6 +445,7 @@ export type AdminTab =
   | 'attendance'
   | 'scanner'
   | 'fees'
+  | 'pendingFees'
   | 'banners'
   | 'social'
   | 'gallery'

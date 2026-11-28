@@ -79,6 +79,7 @@ import {
   AdminSettingsPanel,
 } from './AdminCmsManager';
 import { AdminFeeManager } from './AdminFeeManager';
+import { AdminPendingFeesPanel } from './AdminPendingFeesPanel';
 import { AdminQrScanner } from './AdminQrScanner';
 import { AdminSocialLinksPanel } from './AdminSocialLinksPanel';
 import { BrandLogo } from './BrandLogo';
@@ -478,6 +479,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     { id: 'attendance', label: 'Attendance', icon: <CalendarCheck className="w-4 h-4" /> },
     { id: 'scanner', label: 'QR Scanner', icon: <QrCode className="w-4 h-4" /> },
     { id: 'fees', label: 'Fees', icon: <CreditCard className="w-4 h-4" /> },
+    {
+      id: 'pendingFees',
+      label: 'Pending Fees',
+      icon: <CreditCard className="w-4 h-4 text-amber-500" />,
+      badge: pendingPaymentStudents.length > 0 ? pendingPaymentStudents.length : undefined,
+    },
     { id: 'banners', label: 'Homepage Banners', icon: <LayoutTemplate className="w-4 h-4" /> },
     { id: 'social', label: 'Social & Batch Links', icon: <Link2 className="w-4 h-4" /> },
     { id: 'gallery', label: 'Gallery', icon: <ImageIcon className="w-4 h-4" /> },
@@ -485,7 +492,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     { id: 'settings', label: 'Settings', icon: <Settings className="w-4 h-4" /> },
   ];
 
-  const moreMenuTabs: AdminTab[] = ['students', 'fees', 'banners', 'social', 'gallery', 'notices', 'settings'];
+  const moreMenuTabs: AdminTab[] = ['students', 'fees', 'pendingFees', 'banners', 'social', 'gallery', 'notices', 'settings'];
   const isMoreTabActive = moreMenuTabs.includes(activeTab);
 
   const uniqueCourseNames = Array.from(
@@ -1365,6 +1372,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               batches={batches}
               feeRules={feeRules}
               payments={payments}
+            />
+          )}
+
+          {/* TAB 5B: PENDING FEES PANEL */}
+          {activeTab === 'pendingFees' && (
+            <AdminPendingFeesPanel
+              students={students}
+              applications={applications}
+              settings={settings}
             />
           )}
 
