@@ -5,6 +5,7 @@ import {
   BookOpen,
   CheckCircle2,
   Copy,
+  Download,
   FileText,
   IndianRupee,
   Loader2,
@@ -29,6 +30,7 @@ import {
   StudentStream,
 } from '../types';
 import { BrandLogo } from './BrandLogo';
+import { generateAdmissionFormPdf } from '../lib/admissionPdfGenerator';
 
 interface AdmissionFormProps {
   settings: InstituteSettings;
@@ -92,6 +94,52 @@ export const AdmissionForm: React.FC<AdmissionFormProps> = ({
     feeAmount: number;
   } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+
+  const handleDownloadPdf = async () => {
+    if (!submittedResult || downloadingPdf) return;
+    setDownloadingPdf(true);
+    try {
+      await generateAdmissionFormPdf(
+        {
+          id: submittedResult.applicationNumber,
+          applicationNumber: submittedResult.applicationNumber,
+          studentName: submittedResult.studentName,
+          studentMobile: submittedResult.studentMobile,
+          studentWhatsapp: submittedResult.studentMobile,
+          fatherName: fatherName || '—',
+          motherName: motherName || '—',
+          gender,
+          address: address || '—',
+          village: village || '—',
+          postOffice: postOffice || '—',
+          district: district || '—',
+          state: stateName || 'Bihar',
+          pinCode: pinCode || '—',
+          studentClass,
+          stream,
+          course: submittedResult.course,
+          batch: submittedResult.batch,
+          feeAmount: submittedResult.feeAmount,
+          paidAmount: 0,
+          paymentStatus: 'PENDING',
+          status: 'pending',
+          declarationAccepted: true,
+          photoUrl: photoPreview || '',
+          submittedAt: null,
+          updatedAt: null,
+          trackingKey: '',
+          fatherMobile: '',
+          motherMobile: '',
+        },
+        settings
+      );
+    } catch (err) {
+      console.error('PDF generation error:', err);
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
 
   useEffect(() => {
     if (preselectedCourse) setCourse(preselectedCourse);
@@ -300,21 +348,52 @@ export const AdmissionForm: React.FC<AdmissionFormProps> = ({
             </div>
           </div>
 
-          <div className="mt-6 flex flex-col sm:flex-row gap-2.5">
-            <button
-              type="button"
-              onClick={() => onNavigate('track')}
-              className="flex-1 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold cursor-pointer"
-            >
-              Track Application
-            </button>
-            <button
-              type="button"
-              onClick={() => onNavigate('home')}
-              className="flex-1 py-2.5 rounded-xl bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium cursor-pointer"
-            >
-              Back to Home
-            </button>
+          <div className="mt-6 space-y-2.5">
+            <div className="flex flex-col sm:flex-row gap-2.5">
+              <button
+                type="button"
+                disabled={downloadingPdf}
+                onClick={() => void handleDownloadPdf()}
+                className="flex-1 inline-flex items-center justify-center gap-2 py-3 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-60 text-white text-xs sm:text-sm font-semibold cursor-pointer"
+              >
+                {downloadingPdf ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Generating PDF...
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-4 h-4" />
+                    Download Admission Form PDF
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                disabled={downloadingPdf}
+                onClick={() => void handleDownloadPdf()}
+                className="flex-1 inline-flex items-center justify-center gap-2 py-3 rounded-xl bg-white hover:bg-violet-50 border border-violet-200 text-violet-700 text-xs sm:text-sm font-semibold cursor-pointer"
+              >
+                <FileText className="w-4 h-4" />
+                View Admission Form
+              </button>
+            </div>
+            <div className="flex items-center justify-between pt-2">
+              <button
+                type="button"
+                onClick={() => onNavigate('track')}
+                className="text-xs font-semibold text-violet-700 hover:text-violet-900 cursor-pointer"
+              >
+                Track Application Status →
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate('home')}
+                className="text-xs font-medium text-gray-500 hover:text-gray-900 cursor-pointer"
+              >
+                Back to Home
+              </button>
+            </div>
           </div>
         </div>
       </div>

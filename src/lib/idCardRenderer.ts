@@ -337,8 +337,55 @@ export async function renderIdCardFrontDataUrl(
   ctx.fillText(
     `SESSION: ${student.academicSession || settings.academicSession || '2026–2027'}`,
     photoX + photoW / 2,
-    secY + secH + 34
+    secY + secH + 24
   );
+  ctx.textAlign = 'left';
+
+  // Fee Summary Box under Security Code
+  const feeBoxY = secY + secH + 34;
+  const feeBoxH = 126;
+  drawRoundedRect(ctx, photoX, feeBoxY, photoW, feeBoxH, 16);
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fill();
+  ctx.strokeStyle = '#DDD6FE';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#6D28D9';
+  ctx.font = '700 13px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText('FEE SUMMARY', photoX + photoW / 2, feeBoxY + 22);
+
+  const totalFee = student.feeAmount || 0;
+  const paidFee = student.paidAmount || 0;
+  const remFee = Math.max(0, totalFee - paidFee);
+
+  ctx.textAlign = 'left';
+  ctx.font = '600 12px "Plus Jakarta Sans", sans-serif';
+  ctx.fillStyle = '#4B5563';
+  ctx.fillText('Total:', photoX + 16, feeBoxY + 50);
+  ctx.textAlign = 'right';
+  ctx.font = '700 13px "JetBrains Mono", monospace';
+  ctx.fillStyle = '#111827';
+  ctx.fillText(`₹${totalFee.toLocaleString('en-IN')}`, photoX + photoW - 16, feeBoxY + 50);
+
+  ctx.textAlign = 'left';
+  ctx.font = '600 12px "Plus Jakarta Sans", sans-serif';
+  ctx.fillStyle = '#4B5563';
+  ctx.fillText('Paid:', photoX + 16, feeBoxY + 74);
+  ctx.textAlign = 'right';
+  ctx.font = '700 13px "JetBrains Mono", monospace';
+  ctx.fillStyle = '#047857';
+  ctx.fillText(`₹${paidFee.toLocaleString('en-IN')}`, photoX + photoW - 16, feeBoxY + 74);
+
+  ctx.textAlign = 'left';
+  ctx.font = '600 12px "Plus Jakarta Sans", sans-serif';
+  ctx.fillStyle = '#4B5563';
+  ctx.fillText('Remaining:', photoX + 16, feeBoxY + 104);
+  ctx.textAlign = 'right';
+  ctx.font = '700 15px "JetBrains Mono", monospace';
+  ctx.fillStyle = remFee === 0 ? '#047857' : '#DC2626';
+  ctx.fillText(`₹${remFee.toLocaleString('en-IN')}`, photoX + photoW - 16, feeBoxY + 104);
   ctx.textAlign = 'left';
 
   // ---------------- CENTER COLUMN: Student Information ----------------

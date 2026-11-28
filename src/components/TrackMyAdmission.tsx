@@ -40,6 +40,7 @@ import {
   TrackingIndexEntry,
 } from '../types';
 import { DigitalIdCardModal } from './DigitalIdCardModal';
+import { generateAdmissionFormPdf } from '../lib/admissionPdfGenerator';
 
 interface TrackMyAdmissionProps {
   settings: InstituteSettings;
@@ -148,6 +149,53 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
   // ID Card preview & PDF download state
   const [showIdCardModal, setShowIdCardModal] = useState(false);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [downloadingFormPdf, setDownloadingFormPdf] = useState(false);
+
+  const handleDownloadFormPdf = async () => {
+    if (!verifiedProfile || downloadingFormPdf) return;
+    setDownloadingFormPdf(true);
+    try {
+      await generateAdmissionFormPdf(
+        {
+          id: verifiedProfile.applicationNumber,
+          applicationNumber: verifiedProfile.applicationNumber,
+          studentName: verifiedProfile.studentName,
+          studentMobile: verifiedMobile || '—',
+          studentWhatsapp: verifiedMobile || '—',
+          fatherName: verifiedProfile.fatherName || '—',
+          motherName: '—',
+          gender: 'Male',
+          address: '—',
+          village: '—',
+          postOffice: '—',
+          district: '—',
+          state: 'Bihar',
+          pinCode: '—',
+          studentClass: verifiedProfile.studentClass as any,
+          stream: 'Science',
+          course: verifiedProfile.course,
+          batch: verifiedProfile.batch,
+          feeAmount: verifiedProfile.feeAmount,
+          paidAmount: verifiedProfile.paidAmount,
+          paymentStatus: verifiedProfile.paymentStatus,
+          status: verifiedProfile.studentStatus === 'suspended' ? 'rejected' : 'approved',
+          declarationAccepted: true,
+          photoUrl: verifiedProfile.photoUrl || verifiedProfile.photoDataUrl || '',
+          studentId: verifiedProfile.studentId,
+          submittedAt: verifiedProfile.submittedAt,
+          updatedAt: verifiedProfile.updatedAt,
+          trackingKey: '',
+          fatherMobile: '',
+          motherMobile: '',
+        },
+        settings
+      );
+    } catch (err) {
+      console.error('Admission PDF download error:', err);
+    } finally {
+      setDownloadingFormPdf(false);
+    }
+  };
 
   useEffect(() => {
     if (rateLimitCountdown <= 0) return;
@@ -942,43 +990,76 @@ export const TrackMyAdmission: React.FC<TrackMyAdmissionProps> = ({
                 </div>
               )}
 
-              {/* Action Buttons After Approval: VIEW ID CARD & DOWNLOAD ID CARD PDF */}
-              {idCardStudent ? (
-                <div className="pt-1 flex flex-col sm:flex-row gap-2.5">
+              {/* Action Buttons After Approval: VIEW ID CARD, DOWNLOAD ID CARD PDF, DOWNLOAD ADMISSION FORM PDF */}
+              <div className="pt-1 space-y-2.5">
+                {idCardStudent && (
+                  <div className="flex flex-col sm:flex-row gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setShowIdCardModal(true)}
+                      className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs sm:text-sm font-semibold tracking-wide transition-colors cursor-pointer"
+                    >
+                      <IdCard className="w-4 h-4" />
+                      VIEW ID CARD
+                    </button>
+                    <button
+                      type="button"
+                      disabled={downloadingPdf}
+                      onClick={() => void handleDownloadPdfDirect()}
+                      className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white hover:bg-violet-50 border border-violet-200 text-violet-700 text-xs sm:text-sm font-semibold tracking-wide transition-colors disabled:opacity-60 cursor-pointer"
+                    >
+                      {downloadingPdf ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          PREPARING ID PDF...
+                        </>
+                      ) : (
+                        <>
+                          <Download className="w-4 h-4" />
+                          DOWNLOAD ID CARD PDF
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex flex-col sm:flex-row gap-2.5">
                   <button
                     type="button"
-                    onClick={() => setShowIdCardModal(true)}
-                    className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs sm:text-sm font-semibold tracking-wide transition-colors cursor-pointer"
+                    disabled={downloadingFormPdf}
+                    onClick={() => void handleDownloadFormPdf()}
+                    className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-violet-50 hover:bg-violet-100 border border-violet-200 text-violet-800 text-xs sm:text-sm font-semibold tracking-wide transition-colors disabled:opacity-60 cursor-pointer"
                   >
-                    <IdCard className="w-4 h-4" />
-                    VIEW ID CARD
-                  </button>
-                  <button
-                    type="button"
-                    disabled={downloadingPdf}
-                    onClick={() => void handleDownloadPdfDirect()}
-                    className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white hover:bg-violet-50 border border-violet-200 text-violet-700 text-xs sm:text-sm font-semibold tracking-wide transition-colors disabled:opacity-60 cursor-pointer"
-                  >
-                    {downloadingPdf ? (
+                    {downloadingFormPdf ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        PREPARING PDF...
+                        GENERATING PDF...
                       </>
                     ) : (
                       <>
                         <Download className="w-4 h-4" />
-                        DOWNLOAD COMPLETE ID CARD PDF
+                        DOWNLOAD ADMISSION FORM PDF
                       </>
                     )}
                   </button>
+                  <button
+                    type="button"
+                    disabled={downloadingFormPdf}
+                    onClick={() => void handleDownloadFormPdf()}
+                    className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white hover:bg-gray-50 border border-gray-200 text-gray-800 text-xs sm:text-sm font-semibold tracking-wide transition-colors cursor-pointer"
+                  >
+                    <FileText className="w-4 h-4 text-violet-600" />
+                    VIEW ADMISSION FORM
+                  </button>
                 </div>
-              ) : (
+              </div>
+              {!idCardStudent && (
                 <div className="rounded-xl bg-violet-50/50 border border-violet-100 p-3 flex items-center gap-2.5 text-xs text-violet-900">
                   <FileText className="w-4 h-4 text-violet-600 shrink-0" />
                   <span>
                     {verifiedProfile.status === 'rejected'
                       ? 'This application was not approved. Please contact the institute desk for assistance.'
-                      : 'Your official Student ID Card and PDF download will unlock here automatically once approved by the admin.'}
+                      : 'Your official Student ID Card will unlock here automatically once approved by the admin.'}
                   </span>
                 </div>
               )}

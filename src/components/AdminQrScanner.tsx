@@ -858,55 +858,88 @@ export const AdminQrScanner: React.FC<AdminQrScannerProps> = ({
 
                   <div className="p-4 sm:p-5">
                     {stu ? (
-                      <div className="flex items-center gap-4">
-                        <div className="w-16 h-20 rounded-xl overflow-hidden border border-gray-200 bg-gray-50 shrink-0">
-                          <ResolvedImage
-                            url={stu.photoUrl}
-                            mediaId={stu.photoMediaId}
-                            isPrivate
-                            alt={stu.studentName}
-                            className="w-full h-full object-cover"
-                            fallbackLabel={stu.studentName}
-                          />
-                        </div>
-                        <div className="flex-1 min-w-0 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-                          <div className="sm:col-span-2">
-                            <p className="font-display text-base font-bold text-gray-900 truncate">
-                              {stu.studentName}
-                            </p>
-                            <p className="font-mono text-xs font-semibold text-violet-700">
-                              {stu.studentId} · {stu.studentClass} · {stu.course}
-                            </p>
+                      <div>
+                        <div className="flex items-center gap-4">
+                          <div className="w-16 h-20 rounded-xl overflow-hidden border border-gray-200 bg-gray-50 shrink-0">
+                            <ResolvedImage
+                              url={stu.photoUrl}
+                              mediaId={stu.photoMediaId}
+                              isPrivate
+                              alt={stu.studentName}
+                              className="w-full h-full object-cover"
+                              fallbackLabel={stu.studentName}
+                            />
                           </div>
-                          <div>
-                            <span className="text-gray-500">Batch: </span>
-                            <span className="font-medium text-gray-900">
-                              {latestResult.batchTiming || stu.batch}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-gray-500">Date (IST): </span>
-                            <span className="font-mono font-medium text-gray-900 tabular-nums">
-                              {formatIstDisplayDate(latestResult.attendanceDate)}
-                            </span>
-                          </div>
-                          {latestResult.entryTimeLabel && (
+                          <div className="flex-1 min-w-0 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                            <div className="sm:col-span-2">
+                              <p className="font-display text-base font-bold text-gray-900 truncate">
+                                {stu.studentName}
+                              </p>
+                              <p className="font-mono text-xs font-semibold text-violet-700">
+                                {stu.studentId} · {stu.studentClass} · {stu.course}
+                              </p>
+                            </div>
                             <div>
-                              <span className="text-gray-500">Entry: </span>
-                              <span className="font-mono font-semibold text-emerald-700 tabular-nums">
-                                {latestResult.entryTimeLabel}
+                              <span className="text-gray-500">Batch: </span>
+                              <span className="font-medium text-gray-900">
+                                {latestResult.batchTiming || stu.batch}
                               </span>
                             </div>
-                          )}
-                          {latestResult.exitTimeLabel && (
                             <div>
-                              <span className="text-gray-500">Exit: </span>
-                              <span className="font-mono font-semibold text-violet-700 tabular-nums">
-                                {latestResult.exitTimeLabel}
+                              <span className="text-gray-500">Date (IST): </span>
+                              <span className="font-mono font-medium text-gray-900 tabular-nums">
+                                {formatIstDisplayDate(latestResult.attendanceDate)}
                               </span>
                             </div>
-                          )}
+                            {latestResult.entryTimeLabel && (
+                              <div>
+                                <span className="text-gray-500">Entry: </span>
+                                <span className="font-mono font-semibold text-emerald-700 tabular-nums">
+                                  {latestResult.entryTimeLabel}
+                                </span>
+                              </div>
+                            )}
+                            {latestResult.exitTimeLabel && (
+                              <div>
+                                <span className="text-gray-500">Exit: </span>
+                                <span className="font-mono font-semibold text-violet-700 tabular-nums">
+                                  {latestResult.exitTimeLabel}
+                                </span>
+                              </div>
+                            )}
+                          </div>
                         </div>
+
+                        {/* Prominent Fee Summary & Remaining Fees on Scan Result */}
+                        {(() => {
+                          const totalF = stu.feeAmount || 0;
+                          const paidF = stu.paidAmount || 0;
+                          const remF = Math.max(0, totalF - paidF);
+                          return (
+                            <div className="mt-4 rounded-xl bg-violet-50/70 border border-violet-200 p-3.5 grid grid-cols-3 gap-2 text-center">
+                              <div>
+                                <p className="text-[11px] text-gray-600 font-semibold">TOTAL FEES</p>
+                                <p className="font-mono text-xs sm:text-sm font-bold text-gray-900 mt-0.5">
+                                  ₹{totalF.toLocaleString('en-IN')}
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-[11px] text-emerald-700 font-semibold">PAID FEES</p>
+                                <p className="font-mono text-xs sm:text-sm font-bold text-emerald-700 mt-0.5">
+                                  ₹{paidF.toLocaleString('en-IN')}
+                                </p>
+                              </div>
+                              <div className="bg-white rounded-lg p-1.5 border border-red-200 shadow-xs">
+                                <p className="text-[10px] text-red-600 font-black uppercase tracking-wider">
+                                  REMAINING
+                                </p>
+                                <p className="font-mono text-sm sm:text-base font-black text-red-600 mt-0.5">
+                                  ₹{remF.toLocaleString('en-IN')}
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
                     ) : (
                       <div className="text-xs sm:text-sm text-gray-700 space-y-1">
